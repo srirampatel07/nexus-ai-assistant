@@ -1,0 +1,253 @@
+"""NEXUS core assistant engine (Phase 2: safe tool use).
+
+Orchestration path:
+
+User Input -> Context Manager -> AI Brain -> Planner -> Tool Router
+  -> Permission -> Confirmation -> Tool Execution -> Audit
+  -> Result -> AI Response -> User
+
+The core orchestrates; tools live in `app.tools` and are dispatched only
+through the ToolExecutor. No tool implementation lives in this module.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime
+
+from app.brain.planner import PlanAction, Planner
+from app.brain.prompts import build_system_prompt
+from app.brain.provider import AIProvider, ChatMessage
+from app.brain.router import ToolRouter
+from app.core.config import Settings
+from app.core.events import EventType, NexusEvent, event_bus
+from app.core.exceptions import ProviderError
+from app.core.logger import get_logger
+from app.security.confirmation import ConfirmCallback
+from app.tools.executor import ToolExecutor
+from app.tools.registry import ToolRegistry
+
+log = get_logger("nexus.assistant")
+
+HELP_TEXT = (
+    "I can chat, tell you the time, inspect the system, work with files "
+    "in allowed folders, run safe commands, and launch approved apps. "
+    "Try 'what time is it', 'who are you', or 'status'. "
+    "Type /help for commands, /tools to list tools, /exit to quit."
+)
+
+
+class NexusAssistant:
+    """Central assistant engine with bounded conversation context."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        provider: AIProvider,
+        planner: Planner | None = None,
+        router: ToolRouter | None = None,
+        system_prompt: str | None = None,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
+    ) -> None:
+        self.settings = settings
+        self.provider = provider
+        self.planner = planner or Planner()
+        self.router = router or ToolRouter()
+        self.system_prompt = system_prompt or build_system_prompt()
+        self.executor = executor
+        self.registry = registry or (executor.registry if executor else None)
+        if system_prompt is not None:
+            self.system_prompt = system_prompt
+        else:
+            tools = self.registry.tool_definitions() if self.registry else []
+            self.system_prompt = build_system_prompt(tools=tools)
+        self._history: list[ChatMessage] = []
+
+    @property
+    def tools_enabled(self) -> bool:
+        return self.registry is not None and self.executor is not None
+
+    # -- history / context -------------------------------------------------
+    def get_history(self) -> list[ChatMessage]:
+        return list(self._history)
+
+    def clear_history(self) -> None:
+        self._history.clear()
+
+    def _trim_history(self) -> None:
+        limit = max(0, self.settings.max_history_messages)
+        if limit and len(self._history) > limit:
+            self._history = self._history[-limit:]
+
+    def _context_messages(self, user_text: str) -> list[ChatMessage]:
+        """System prompt + bounded history + current user message."""
+        self._trim_history()
+        return (
+            [ChatMessage(role="system", content=self.system_prompt)]
+            + self._history
+            + [ChatMessage(role="user", content=user_text)]
+        )
+
+    # -- built-in intents (no AI call needed) ------------------------------
+    def _local_reply(self, user_text: str) -> str | None:
+        text = user_text.strip().lower()
+        if not text:
+            return "I'm listening. What would you like me to do?"
+        if text in ("hi", "hello", "hey", "hello nexus", "hey nexus"):
+            return "Hello. How can I help?"
+        if text in ("help", "what can you do", "/help"):
+            return HELP_TEXT
+        if text in ("who are you", "your name", "what are you"):
+            return (
+                "I'm NEXUS - your personal AI operating assistant. "
+                "I can chat, inspect this system, work with files in allowed "
+                "folders, run safe commands, and launch approved apps. "
+                "Anything risky needs your explicit approval first."
+            )
+        if text in ("status", "/status"):
+            return (
+                f"Online. Provider: {self.provider.name}, "
+                f"model: {self.settings.ai_model}, "
+                f"history: {len(self._history)} message(s)."
+            )
+        if any(k in text for k in ("time", "date", "day")) and any(
+            k in text for k in ("what", "current", "now", "today", "time", "date")
+        ):
+            now = datetime.now().strftime("%A, %Y-%m-%d %H:%M:%S")
+            return f"It is currently {now}."
+        return None
+
+    # -- main entry points -------------------------------------------------
+    async def achat(
+        self, user_text: str, confirm: ConfirmCallback | None = None
+    ) -> str:
+        """Process one user message asynchronously, return the reply.
+
+        `confirm` is asked before any confirmation-required tool runs.
+        Without it, such tools are safely denied (never silently executed).
+        """
+        event_bus.publish(
+            NexusEvent(type=EventType.USER_MESSAGE, payload={"text": user_text})
+        )
+        plan = self.planner.plan(user_text, history_count=len(self._history))
+        log.debug("plan=%s reasoning=%s", plan.action, plan.reasoning)
+
+        local = self._local_reply(user_text)
+        if local is not None:
+            reply = local
+        elif self.tools_enabled:
+            reply = await self._achat_with_tools(user_text, confirm)
+        elif plan.action == PlanAction.USE_TOOL:
+            # No registry wired: legacy Phase 1 behavior.
+            self.router.route(plan)
+            reply = "Tool execution is not available yet (Phase 2)."
+        else:
+            reply = await self._plain_reply(user_text)
+
+        self._history.append(ChatMessage(role="user", content=user_text))
+        self._history.append(ChatMessage(role="assistant", content=reply))
+        self._trim_history()
+        event_bus.publish(
+            NexusEvent(type=EventType.ASSISTANT_MESSAGE, payload={"text": reply})
+        )
+        return reply
+
+    async def _plain_reply(self, user_text: str) -> str:
+        """Single provider call with no tools (legacy path)."""
+        messages = self._context_messages(user_text)
+        try:
+            response = await self.provider.send_message(messages)
+        except ProviderError as exc:
+            log.warning("provider failed: %s", exc)
+            return self._provider_error_reply(exc)
+        return response.content
+
+    @staticmethod
+    def _provider_error_reply(exc: ProviderError) -> str:
+        log.warning("provider failed: %s", exc)
+        return (
+            "I'm having trouble reaching my AI brain right now. "
+            "Please check your AI provider configuration and try again."
+        )
+
+    async def _achat_with_tools(
+        self, user_text: str, confirm: ConfirmCallback | None
+    ) -> str:
+        """Agentic loop: model -> tool calls -> executor -> model -> answer."""
+        assert self.registry is not None and self.executor is not None
+        llm_tools = self.registry.tool_definitions()
+        max_iters = max(1, self.settings.max_tool_iterations)
+        working = self._context_messages(user_text)
+        last_text = ""
+        for _ in range(max_iters):
+            try:
+                response = await self.provider.send_message_with_tools(
+                    working, llm_tools
+                )
+            except ProviderError as exc:
+                return self._provider_error_reply(exc)
+            last_text = response.content or last_text
+            if not response.tool_calls:
+                return response.content
+            working.append(
+                ChatMessage(
+                    role="assistant",
+                    content=response.content or "",
+                    tool_calls=[c.to_wire() for c in response.tool_calls],
+                )
+            )
+            for call in response.tool_calls:
+                event_bus.publish(
+                    NexusEvent(
+                        type=EventType.TOOL_STARTED,
+                        payload={"tool": call.name, "arguments": call.arguments},
+                    )
+                )
+                result = await self.executor.execute(
+                    call.name, call.arguments, confirm=confirm
+                )
+                event_bus.publish(
+                    NexusEvent(
+                        type=(
+                            EventType.TOOL_COMPLETED
+                            if result.ok
+                            else EventType.TOOL_FAILED
+                        ),
+                        payload={"tool": call.name, "ok": result.ok},
+                    )
+                )
+                working.append(
+                    ChatMessage(
+                        role="tool",
+                        tool_call_id=call.id or call.name,
+                        content=json.dumps(
+                            {
+                                "ok": result.ok,
+                                "output": result.output,
+                                "error": result.error,
+                            },
+                            default=str,
+                        ),
+                    )
+                )
+        log.warning("tool loop hit max iterations (%d)", max_iters)
+        return last_text or (
+            "I ran the requested tools but couldn't compose a final answer. "
+            "Please try a more specific request."
+        )
+
+    def chat(self, user_text: str, confirm: ConfirmCallback | None = None) -> str:
+        """Synchronous wrapper for the text CLI."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            # Called from async context (e.g. future API): run in a new thread loop.
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, self.achat(user_text, confirm)).result()
+        return asyncio.run(self.achat(user_text, confirm))
