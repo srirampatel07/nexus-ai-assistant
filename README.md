@@ -1,16 +1,24 @@
 # NEXUS — Personal AI Operating Assistant
 
 NEXUS is a modular, provider-independent personal AI operating assistant.
-Phase 2 (this release) adds a **safe, modular tool system**: the assistant
-can inspect the system, work with files in allowed folders, run vetted
-commands, and launch approved apps — every call validated, permission-checked,
-confirmed when risky, and audit-logged. See `docs/TOOLS.md` for the full
-tool architecture.
+Phase 4 (this release) adds a **hands-free voice interface** around the same
+assistant: offline speech recognition, local speech output, same memory and
+tools. See `docs/VOICE.md` for the full voice guide.
 
 Personality: calm, intelligent, concise, helpful. NEXUS never pretends an
 action succeeded when it did not.
 
-## Phase 3 — Persistent memory v1 (current)
+## Phase 4 — Voice interface (current)
+
+- Microphone-driven conversation around the same `NexusAssistant`
+  (memory + tools work unchanged; confirmations stay auto-deny in voice)
+- Offline backends only: Vosk STT (local model) + Windows SAPI TTS —
+  no cloud audio, no paid API, nothing recorded to disk
+- `python run.py --voice` (stop phrase or Ctrl+C exits cleanly);
+  `python run.py --voice --script "..."` for headless pipeline checks
+- Full details in `docs/VOICE.md`
+
+## Phase 3 — Persistent memory v1
 
 - Local SQLite memory (`data/nexus.db`): conversation turns, facts,
   preferences, projects, settings — never secrets (refused or redacted)
@@ -118,7 +126,7 @@ python -m pytest -q
 
 Tests mock all external services and need no API credentials.
 
-## Project structure (Phase 3)
+## Project structure (Phase 4)
 
 ```
 NEXUS/
@@ -130,11 +138,13 @@ NEXUS/
   app/security/  policy.py confirmation.py audit.py
   app/memory/  database.py models.py repository.py manager.py
                redaction.py categories.py
+  app/voice/  audio.py stt.py tts.py session.py factories.py errors.py
   tests/      conftest + test_config/provider/assistant/core/prompts
               + test_tool_registry/audit/filesystem/terminal/apps_system
               + test_executor/tool_calls/assistant_tools/tool_wire
               + test_memory/memory_integration
-  docs/TOOLS.md docs/MEMORY.md
+              + test_voice_audio/backends/session/cli
+  docs/TOOLS.md docs/MEMORY.md docs/VOICE.md
   data/ logs/ scripts/ frontend/dashboard/  (placeholders for later phases)
   run.py  requirements.txt  .env.example  README.md
 ```

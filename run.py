@@ -1,10 +1,11 @@
-"""NEXUS entry point (Phase 2: text mode + tools + health).
+"""NEXUS entry point (Phase 4: text + voice + health).
 
 Usage:
     python run.py --text     # interactive text conversation (tools enabled)
+    python run.py --voice    # microphone voice conversation
+    python run.py --voice --script "hello | status"   # headless pipeline check
     python run.py --health    # print provider/config health as JSON
     python run.py --version   # print version
-    python run.py --voice     # Phase 5 stub (clear setup message, no crash)
 """
 
 from __future__ import annotations
@@ -176,13 +177,56 @@ def cmd_text(debug: bool = False) -> int:
     return 0
 
 
-def cmd_voice() -> int:
-    print(
-        "Voice mode is planned for Phase 5 and is not available yet.\n"
-        "Missing audio dependencies (microphone / STT / TTS / wake-word).\n"
-        "Use: python run.py --text"
+def cmd_voice(script: list[str] | None = None) -> int:
+    """Real voice interface (Phase 4). Never crashes: missing backends or
+    devices produce clear setup guidance (exit 2), never a traceback."""
+    from app.voice.audio import check_microphone
+    from app.voice.errors import VoiceUnavailableError
+    from app.voice.factories import (
+        create_audio_config,
+        create_recorder,
+        create_stt,
+        create_tts,
     )
-    return 2
+    from app.voice.session import VoiceSession
+
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    if not settings.voice_enabled and script is None:
+        print("Voice mode is disabled (VOICE_ENABLED=false).")
+        return 2
+    try:
+        stt = create_stt(settings, script=script)
+        tts = create_tts(settings)
+        recorder = create_recorder(settings)
+        assistant = build_assistant(settings)
+    except VoiceUnavailableError as exc:
+        print(f"Voice mode unavailable.\n{exc}")
+        return 2
+
+    stt_ok, stt_detail = stt.is_available()
+    tts_ok, tts_detail = tts.is_available()
+    if script is not None:
+        mic_ok, mic_detail = True, "scripted (no microphone needed)"
+    else:
+        mic_ok, mic_detail = check_microphone(settings.voice_sample_rate)
+    print("NEXUS Voice Mode")
+    print(f"STT: {settings.voice_stt_backend if script is None else 'script'} ({stt_detail})")
+    print(f"TTS: {settings.voice_tts_backend} ({tts_detail})")
+    print(f"Microphone: {'available' if mic_ok else 'UNAVAILABLE'} ({mic_detail})")
+    print(f"Speaker: {'available' if tts_ok else 'UNAVAILABLE'} ({tts_detail})")
+    if not mic_ok:
+        print("Cannot start voice mode without a microphone. See docs/VOICE.md.")
+        return 2
+    session = VoiceSession(
+        assistant=assistant,
+        stt=stt,
+        tts=tts,
+        recorder=recorder,
+        config=create_audio_config(settings),
+        stop_phrases=settings.voice_stop_phrases,
+    )
+    return session.run_forever()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -190,7 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--text", action="store_true", help="interactive text mode")
     parser.add_argument("--health", action="store_true", help="health check as JSON")
     parser.add_argument("--version", action="store_true", help="print version")
-    parser.add_argument("--voice", action="store_true", help="voice mode (Phase 5)")
+    parser.add_argument("--voice", action="store_true", help="microphone voice mode")
+    parser.add_argument(
+        "--script",
+        default=None,
+        help="headless voice check: '|' separated utterances, no mic needed",
+    )
     parser.add_argument("--debug", action="store_true", help="verbose tool/config output")
     args = parser.parse_args(argv)
 
@@ -200,7 +249,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.health:
         return cmd_health(debug=args.debug)
     if args.voice:
-        return cmd_voice()
+        script = (
+            [s.strip() for s in args.script.split("|") if s.strip()]
+            if args.script
+            else None
+        )
+        return cmd_voice(script=script)
     if args.text:
         return cmd_text(debug=args.debug)
     parser.print_help()

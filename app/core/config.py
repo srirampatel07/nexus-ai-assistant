@@ -1,4 +1,4 @@
-"""NEXUS configuration — environment variables / .env (Phase 1).
+"""NEXUS configuration — environment variables / .env.
 
 Never hard-code credentials. All secrets come from the environment.
 """
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default=Path("data"))
     logs_dir: Path = Field(default=Path("logs"))
 
-    # --- AI provider abstraction (provider-independent) ---
+    # --- AI provider abstraction ---
     ai_provider: str = Field(default="echo")
     ai_model: str = Field(default="nexus-default")
     ai_api_key: SecretStr = Field(default=SecretStr(""))
@@ -38,11 +38,16 @@ class Settings(BaseSettings):
     text_mode_debug: bool = Field(default=False)
 
     # --- Tool system (Phase 2) ---
-    # Comma-separated or JSON list in the environment, e.g.
-    # NEXUS_ALLOWED_ROOTS="C:\chanti\nexus,C:\chanti\projects"
-    nexus_allowed_roots: list[str] = Field(default_factory=lambda: [r"C:\chanti\nexus"])
+    nexus_allowed_roots: list[str] = Field(
+        default_factory=lambda: [r"C:\chanti\nexus"]
+    )
     nexus_allowed_apps: list[str] = Field(
-        default_factory=lambda: ["notepad", "explorer", "powershell", "code"]
+        default_factory=lambda: [
+            "notepad",
+            "explorer",
+            "powershell",
+            "code",
+        ]
     )
     terminal_default_timeout_seconds: float = Field(default=30.0)
     terminal_max_output_chars: int = Field(default=65536)
@@ -58,12 +63,57 @@ class Settings(BaseSettings):
     memory_context_max_chars: int = Field(default=4000)
     memory_recent_limit: int = Field(default=10)
     memory_default_category: str = Field(default="conversation")
-    memory_retention_days: int = Field(default=0)  # 0 = keep forever
+    memory_retention_days: int = Field(default=0)
+
+    # --- Voice interface (Phase 4) ---
+    voice_enabled: bool = Field(default=True)
+
+    # STT backend:
+    #   whisper = local Faster-Whisper
+    #   vosk   = local Vosk fallback
+    voice_stt_backend: str = Field(default="whisper")
+
+    # TTS backend:
+    #   sapi = Windows SAPI / pyttsx3
+    #   null = silent backend for tests
+    voice_tts_backend: str = Field(default="sapi")
+
+    # Whisper model.
+    # `small.en` is downloaded automatically on first use.
+    voice_stt_model_path: str = Field(default="small.en")
+
+    # Faster-Whisper CPU configuration.
+    voice_stt_device: str = Field(default="cpu")
+    voice_stt_compute_type: str = Field(default="int8")
+
+    voice_sample_rate: int = Field(default=16000)
+    voice_channels: int = Field(default=1)
+
+    # Whisper uses "en", not "en-US".
+    voice_language: str = Field(default="en")
+
+    voice_silence_timeout_seconds: float = Field(default=1.2)
+    voice_max_utterance_seconds: float = Field(default=15.0)
+
+    voice_tts_rate: int = Field(default=175)
+    voice_tts_volume: float = Field(default=1.0)
+
+    voice_stop_phrases: list[str] = Field(
+        default_factory=lambda: [
+            "stop listening",
+            "goodbye nexus",
+            "exit voice",
+        ]
+    )
 
     def model_dump_safe(self) -> dict:
         """Return settings as a JSON-serializable dict with secrets redacted."""
         data = self.model_dump(mode="json")
-        data["ai_api_key"] = "***" if self.ai_api_key.get_secret_value() else ""
+        data["ai_api_key"] = (
+            "***"
+            if self.ai_api_key.get_secret_value()
+            else ""
+        )
         return data
 
 
