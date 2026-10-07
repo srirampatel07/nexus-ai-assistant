@@ -10,7 +10,21 @@ tool architecture.
 Personality: calm, intelligent, concise, helpful. NEXUS never pretends an
 action succeeded when it did not.
 
-## Phase 2 — Safe tool use (current)
+## Phase 3 — Persistent memory v1 (current)
+
+- Local SQLite memory (`data/nexus.db`): conversation turns, facts,
+  preferences, projects, settings — never secrets (refused or redacted)
+- `MemoryManager` API: `remember/search/get/get_context/get_recent/forget/clear_conversation`
+- Deterministic keyword recall (no embeddings yet); per-conversation scoping
+  with global facts that survive restarts
+- Each assistant run gets a `conversation_id` (shown in `/status`)
+- CLI: `/memory`, `/memory search <text>`, `/forget <id>`
+- Full details in `docs/MEMORY.md`
+
+Phase 2 tool system (registry, permissions, confirmations, audit) is
+unchanged underneath.
+
+## Phase 2 — Safe tool use
 
 - Tool registry (`app/tools`): 11 tools across system/filesystem/terminal/applications
 - Permission model: SAFE / LOW / MEDIUM / HIGH / BLOCKED (`app/security/policy.py`)
@@ -47,7 +61,19 @@ python run.py --text
 python run.py --text --debug   # visible provider/history info
 ```
 
-Text commands: `/help` `/tools` `/clear` `/status` `/exit`.
+Text commands: `/help` `/tools` `/memory` `/memory search <text>` `/forget <id>` `/clear` `/status` `/exit`.
+
+## Memory settings
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MEMORY_ENABLED` | `true` | persistent memory on/off |
+| `MEMORY_DATABASE_PATH` | `data/nexus.db` | local SQLite file |
+| `MEMORY_CONTEXT_LIMIT` | `10` | max memory entries per prompt |
+| `MEMORY_CONTEXT_MAX_CHARS` | `4000` | max memory prompt chars |
+| `MEMORY_RECENT_LIMIT` | `10` | recent turns recalled |
+| `MEMORY_DEFAULT_CATEGORY` | `conversation` | default remember category |
+| `MEMORY_RETENTION_DAYS` | `0` | expiry window (0 = keep forever) |
 
 ## New tool settings
 
@@ -92,7 +118,7 @@ python -m pytest -q
 
 Tests mock all external services and need no API credentials.
 
-## Project structure (Phase 1)
+## Project structure (Phase 3)
 
 ```
 NEXUS/
@@ -102,10 +128,13 @@ NEXUS/
   app/tools/  base.py registry.py schemas.py permissions.py executor.py
               terminal.py filesystem.py applications.py system.py
   app/security/  policy.py confirmation.py audit.py
+  app/memory/  database.py models.py repository.py manager.py
+               redaction.py categories.py
   tests/      conftest + test_config/provider/assistant/core/prompts
               + test_tool_registry/audit/filesystem/terminal/apps_system
-              + test_executor/tool_calls/assistant_tools
-  docs/TOOLS.md
+              + test_executor/tool_calls/assistant_tools/tool_wire
+              + test_memory/memory_integration
+  docs/TOOLS.md docs/MEMORY.md
   data/ logs/ scripts/ frontend/dashboard/  (placeholders for later phases)
   run.py  requirements.txt  .env.example  README.md
 ```

@@ -44,6 +44,53 @@ async def console_confirm(request: ConfirmationRequest) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
+def _preview(text: str, limit: int = 120) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[:limit] + "..."
+
+
+def _memory_line(rec) -> str:  # type: ignore[no-untyped-def]
+    created = rec.created_at.isoformat(timespec="seconds") if rec.created_at else "?"
+    return f"#{rec.id} [{rec.category}] ({rec.conversation_id}) {_preview(rec.content)} ({created})"
+
+
+def cmd_memory_list(assistant) -> str:  # type: ignore[no-untyped-def]
+    """List top memories across conversations (safe, deterministic)."""
+    if assistant.memory is None:
+        return "Memory is disabled. Set MEMORY_ENABLED=true to enable it."
+    records = assistant.memory.search("", limit=10)
+    if not records:
+        return "No memories stored yet."
+    return "Memories:\n" + "\n".join(_memory_line(rec) for rec in records)
+
+
+def cmd_memory_search(assistant, text: str) -> str:  # type: ignore[no-untyped-def]
+    """Search all memories."""
+    if assistant.memory is None:
+        return "Memory is disabled. Set MEMORY_ENABLED=true to enable it."
+    if not text.strip():
+        return "Usage: /memory search <text>"
+    records = assistant.memory.search(text.strip(), limit=10)
+    if not records:
+        return f"No memories matching '{text.strip()}'."
+    return f"Matches for '{text.strip()}':\n" + "\n".join(
+        _memory_line(rec) for rec in records
+    )
+
+
+def cmd_forget(assistant, id_text: str) -> str:  # type: ignore[no-untyped-def]
+    """Forget one memory by id (soft delete)."""
+    if assistant.memory is None:
+        return "Memory is disabled. Set MEMORY_ENABLED=true to enable it."
+    try:
+        entry_id = int(id_text.strip())
+    except (ValueError, AttributeError):
+        return "Usage: /forget <id>  (see /memory for ids)"
+    if assistant.memory.forget(entry_id):
+        return f"Forgot memory #{entry_id}."
+    return f"No memory #{id_text.strip()} found."
+
+
 def cmd_health(debug: bool = False) -> int:
     from app.brain.provider import create_provider
 
@@ -88,7 +135,7 @@ def cmd_text(debug: bool = False) -> int:
             print("Goodbye.")
             return 0
         if low == "/help":
-            print("Commands: /help /tools /clear /status /exit")
+            print("Commands: /help /tools /memory /memory search <text> /forget <id> /clear /status /exit")
             print("Tools needing approval will ask: Allow? [y/N]")
             continue
         if low == "/tools":
@@ -99,6 +146,15 @@ def cmd_text(debug: bool = False) -> int:
                 print(f"- {tool.name} [{tool.category}/{tool.risk_level.value}/{confirm}]")
                 print(f"    {tool.description}")
             continue
+        if low == "/memory":
+            print(cmd_memory_list(assistant))
+            continue
+        if low.startswith("/memory search "):
+            print(cmd_memory_search(assistant, user[len("/memory search "):]))
+            continue
+        if low.startswith("/forget"):
+            print(cmd_forget(assistant, user[len("/forget"):]))
+            continue
         if low == "/clear":
             assistant.clear_history()
             print("Conversation cleared.")
@@ -106,6 +162,11 @@ def cmd_text(debug: bool = False) -> int:
         if low == "/status":
             info = get_nexus_info(settings)
             info["tools"] = len(assistant.registry) if assistant.registry else 0
+            info["conversation_id"] = assistant.conversation_id
+            if assistant.memory is not None:
+                info["memory_count"] = assistant.memory.count(
+                    conversation_id=assistant.conversation_id
+                )
             print(json.dumps(info, indent=2))
             continue
         reply = assistant.chat(user, confirm=console_confirm)

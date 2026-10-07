@@ -61,5 +61,9 @@ class MemoryError(NexusError):  # noqa: A001 - intentional domain name
     """Memory subsystem failure (Phase 3+)."""
 
 
+class MemoryRejected(MemoryError):
+    """A remember() request was refused (secret material). Nothing stored."""
+
+
 class VoiceNotAvailable(NexusError):
     """Audio dependencies or devices unavailable (Phase 5+)."""

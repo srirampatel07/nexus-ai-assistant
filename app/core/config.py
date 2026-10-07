@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     tools_audit_file: str = Field(default="logs/tools.jsonl")
     max_tool_iterations: int = Field(default=3)
 
+    # --- Persistent memory (Phase 3) ---
+    memory_enabled: bool = Field(default=True)
+    memory_database_path: str = Field(default="data/nexus.db")
+    memory_context_limit: int = Field(default=10)
+    memory_context_max_chars: int = Field(default=4000)
+    memory_recent_limit: int = Field(default=10)
+    memory_default_category: str = Field(default="conversation")
+    memory_retention_days: int = Field(default=0)  # 0 = keep forever
+
     def model_dump_safe(self) -> dict:
         """Return settings as a JSON-serializable dict with secrets redacted."""
         data = self.model_dump(mode="json")
