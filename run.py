@@ -1,4 +1,4 @@
-"""NEXUS entry point (Phase 4: text + voice + health).
+"""NEXUS entry point (Phase 5: text + voice + vision + health).
 
 Usage:
     python run.py --text     # interactive text conversation (tools enabled)
@@ -6,6 +6,8 @@ Usage:
     python run.py --voice --script "hello | status"   # headless pipeline check
     python run.py --health    # print provider/config health as JSON
     python run.py --version   # print version
+
+Text commands include: /vision <image-path> [question] (explicit upload).
 """
 
 from __future__ import annotations
@@ -92,6 +94,54 @@ def cmd_forget(assistant, id_text: str) -> str:  # type: ignore[no-untyped-def]
     return f"No memory #{id_text.strip()} found."
 
 
+def parse_vision_args(arg_text: str) -> tuple[str, str]:
+    """Split '/vision <path> [question]' args, honoring quotes.
+
+    Returns (image_path, question). Empty path means usage error.
+    """
+    import shlex
+
+    text = (arg_text or "").strip()
+    if not text:
+        return "", ""
+    try:
+        parts = shlex.split(text, posix=True)
+    except ValueError:
+        parts = text.split()
+    if not parts:
+        return "", ""
+    return parts[0], " ".join(parts[1:]).strip()
+
+
+def _is_cmd(low: str, name: str) -> bool:
+    """True when `low` is exactly `name` or starts with `name + ' '`.
+
+    Prevents prefix over-matching (e.g. '/visionary' is not '/vision').
+    """
+    return low == name or low.startswith(name + " ")
+
+
+def cmd_vision(assistant, arg_text: str) -> str:  # type: ignore[no-untyped-def]
+    """Handle '/vision <image-path> [question]' (explicit upload only)."""
+    from pathlib import Path
+
+    image_path, question = parse_vision_args(arg_text)
+    if not image_path:
+        return "Usage: /vision <image-path> [question]"
+    vision_enabled = bool(getattr(assistant.settings, "vision_enabled", True))
+    if not vision_enabled:
+        return "Vision is disabled (VISION_ENABLED=false)."
+    vision_model = getattr(assistant.settings, "vision_model", "?")
+    # M1: disclose the basename only, never the full filesystem path.
+    print(
+        f"[vision] Uploading '{Path(image_path).name}' for one-time analysis "
+        f"with {vision_model} (local file input only; nothing else is sent)."
+    )
+    return assistant.chat_with_image(
+        image_path, question, confirm=console_confirm
+    )
+
+
 def cmd_health(debug: bool = False) -> int:
     from app.brain.provider import create_provider
 
@@ -118,7 +168,7 @@ def cmd_text(debug: bool = False) -> int:
     setup_logging("DEBUG" if debug else settings.log_level)
     assistant = build_assistant(settings)
 
-    print(f"{settings.app_name} v{__version__} - text mode (Phase 2, tools enabled).")
+    print(f"{settings.app_name} v{__version__} - text mode (Phase 5, tools + vision enabled).")
     print("Type /help for commands, /exit to quit.")
     if debug:
         print(f"[debug] provider={settings.ai_provider} model={settings.ai_model}")
@@ -136,8 +186,9 @@ def cmd_text(debug: bool = False) -> int:
             print("Goodbye.")
             return 0
         if low == "/help":
-            print("Commands: /help /tools /memory /memory search <text> /forget <id> /clear /status /exit")
+            print("Commands: /help /tools /memory /memory search <text> /forget <id> /clear /status /vision <image-path> [question] /exit")
             print("Tools needing approval will ask: Allow? [y/N]")
+            print("Vision (/vision) sends only that image to the vision model; ordinary chat sends no images.")
             continue
         if low == "/tools":
             tools = assistant.registry.list_tools() if assistant.registry else []
@@ -153,8 +204,11 @@ def cmd_text(debug: bool = False) -> int:
         if low.startswith("/memory search "):
             print(cmd_memory_search(assistant, user[len("/memory search "):]))
             continue
-        if low.startswith("/forget"):
+        if _is_cmd(low, "/forget"):
             print(cmd_forget(assistant, user[len("/forget"):]))
+            continue
+        if _is_cmd(low, "/vision"):
+            print(cmd_vision(assistant, user[len("/vision"):]))
             continue
         if low == "/clear":
             assistant.clear_history()

@@ -14,3 +14,5 @@ sounddevice>=0.4.6  # microphone capture (PortAudio, wheels on Windows)
 numpy>=1.26  # required by sounddevice
 faster-whisper>=1.2.1
 av<19
+# Phase 5 vision (local validation/preprocessing + optional Groq vision model)
+Pillow>=10.0  # image verification, safe resize, EXIF stripping (Windows wheels)

@@ -35,10 +35,12 @@ def get_nexus_info(settings: Settings | None = None) -> dict:
     return {
         "name": resolved.app_name,
         "version": __version__,
-        "phase": 3,
+        "phase": 5,
         "environment": resolved.environment,
         "ai_provider": resolved.ai_provider,
         "ai_model": resolved.ai_model,
         "memory_enabled": resolved.memory_enabled,
         "memory_database": resolved.memory_database_path,
+        "vision_enabled": resolved.vision_enabled,
+        "vision_model": resolved.vision_model,
     }

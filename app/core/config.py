@@ -106,6 +106,18 @@ class Settings(BaseSettings):
         ]
     )
 
+    # --- Vision interface (Phase 5) ---
+    # Default text model (AI_MODEL, e.g. openai/gpt-oss-120b) is text-only.
+    # Image analysis uses VISION_MODEL only, via the same OpenAI-compatible
+    # endpoint + API key (no second provider). Verified against Groq docs:
+    # gpt-oss-120b is INPUT Text / OUTPUT Text; vision lives on
+    # qwen/qwen3.8-27b (20 MB limit, max 3 images, 2048 tokens/image).
+    vision_enabled: bool = Field(default=True)
+    vision_model: str = Field(default="qwen/qwen3.8-27b")
+    vision_max_bytes: int = Field(default=10_485_760)
+    vision_max_dim: int = Field(default=2048)
+    vision_jpeg_quality: int = Field(default=85)
+
     def model_dump_safe(self) -> dict:
         """Return settings as a JSON-serializable dict with secrets redacted."""
         data = self.model_dump(mode="json")
