@@ -21,7 +21,7 @@ from app.tools.schemas import (
 
 def _tool():
     return LlmTool(
-        name="system.info",
+        name="system_info",
         description="Get system info.",
         parameters={"type": "object", "properties": {}},
     )
@@ -30,7 +30,7 @@ def _tool():
 def test_to_openai_tools_shape():
     wire = to_openai_tools([_tool()])
     assert wire[0]["type"] == "function"
-    assert wire[0]["function"]["name"] == "system.info"
+    assert wire[0]["function"]["name"] == "system_info"
     assert wire[0]["function"]["parameters"]["type"] == "object"
 
 

@@ -61,9 +61,17 @@ def test_unregister():
 def test_tool_definitions_metadata():
     defs = _registry_with_system().tool_definitions()
     assert len(defs) == 1
-    assert defs[0].name == "system.info"
+    # Model-visible name is the normalized form (dots -> underscores).
+    assert defs[0].name == "system_info"
     assert defs[0].description
     assert defs[0].parameters.get("type") == "object"
+
+
+def test_registry_resolves_external_name():
+    reg = _registry_with_system()
+    assert isinstance(reg.get("system_info"), SystemInfoTool)
+    assert reg.has("system_info")
+    assert reg.internal_name("system_info") == "system.info"
 
 
 def test_list_tools_returns_registered():

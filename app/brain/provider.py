@@ -1,3 +1,4 @@
+
 """Provider-independent AI abstraction (Phase 1).
 
 NEXUS talks to AI only through `AIProvider`. Switching models/providers
@@ -6,7 +7,7 @@ must never require changes outside this module + configuration.
 Interface:
 - send_message()
 - stream_message()
-- generate_tool_call()  (Phase 1 stub — tools arrive in Phase 2)
+- generate_tool_call() (Phase 1 stub — tools arrive in Phase 2)
 - health_check()
 """
 
@@ -27,22 +28,76 @@ from app.tools.schemas import (
     LlmToolCall,
     parse_openai_tool_calls,
     to_openai_tools,
+    validate_tool_definitions,
 )
 
 Role = Literal["system", "user", "assistant", "tool"]
 
 MAX_ERROR_BODY_CHARS = 500
 
+# Signals that the endpoint genuinely does not support tool calling
+# (safe to fall back to a plain answer) — as opposed to signals that our
+# own definitions are malformed (must raise, never hide behind fallback).
+_TOOL_UNSUPPORTED_HINTS = (
+    "tool_choice not supported",
+    "tools not supported",
+    "does not support tools",
+    "does not support tool",
+    "unsupported parameter",
+    "unknown parameter",
+    "no tools",
+)
+_TOOL_DEFINITION_HINTS = (
+    "invalid name",
+    "invalid function",
+    "function at index",
+    "only a-z",
+    "alphanumeric",
+    "underscore",
+    "invalid schema",
+    "invalid parameter",
+    "not valid json schema",
+    "additional properties",
+)
+
 
 def describe_http_error(status: int, body: str, model: str) -> str:
     """Build a safe diagnostic message: status + sanitized body snippet.
 
     Secrets are redacted before inclusion; the body is truncated. Never
-    contains the API key, headers, or .env contents.
+    contains the API key, headers, or .env contents. The category hint
+    (auth / rate-limit / upstream / bad-request) is derived from status
+    so callers can distinguish failure modes without leaking secrets.
     """
     snippet = sanitize(body or "")[:MAX_ERROR_BODY_CHARS]
+    if status in (401, 403):
+        category = "authentication/authorization failure"
+    elif status == 402:
+        category = "payment/quota failure"
+    elif status == 429:
+        category = "rate limited / quota exhausted"
+    elif status == 400:
+        category = "bad request"
+    elif 500 <= status < 600:
+        category = "upstream provider failure"
+    else:
+        category = "provider error"
     detail = f" (model={model}): {snippet}" if snippet else f" (model={model})"
-    return f"AI provider error (HTTP {status}){detail}"
+    return f"AI provider error (HTTP {status}, {category}){detail}"
+
+
+def _is_tools_unsupported_400(body: str) -> bool:
+    """True only when a 400 means 'tools not supported here'.
+
+    An invalid-name/invalid-schema 400 is a local definition defect and
+    must NOT fall back — it must surface so the definitions get fixed.
+    """
+    low = (body or "").lower()
+    if any(hint in low for hint in _TOOL_DEFINITION_HINTS):
+        return False
+    return any(hint in low for hint in _TOOL_UNSUPPORTED_HINTS) or (
+        "tool" in low and "support" in low
+    )
 
 
 class ChatMessage(BaseModel):
@@ -54,9 +109,8 @@ class ChatMessage(BaseModel):
     def to_wire(self) -> dict[str, Any]:
         """Serialize for the OpenAI-compatible wire format.
 
-        Empty `tool_calls` and null `tool_call_id` are omitted: strict
-        providers (e.g. Groq) reject `tool_calls` on non-assistant messages,
-        so         only populated fields are sent. Provider-neutral hygiene.
+        Empty `tool_calls` and null `tool_call_id` are omitted because
+        strict providers may reject empty tool-call fields.
         """
         data = self.model_dump(exclude_none=True)
         if not data.get("tool_calls"):
@@ -82,7 +136,7 @@ class AIProvider(ABC):
 
     @abstractmethod
     async def send_message(self, messages: list[ChatMessage]) -> ChatResponse:
-        """Send messages, return the assistant's reply."""
+        """Send messages and return the assistant's reply."""
         ...
 
     @abstractmethod
@@ -93,14 +147,13 @@ class AIProvider(ABC):
         ...
 
     async def generate_tool_call(self, messages: list[ChatMessage]) -> None:
-        """Return a tool call, or None. Phase 2: use send_message_with_tools."""
+        """Phase 1 stub; Phase 2 uses send_message_with_tools."""
         return None
 
     async def send_message_with_tools(
         self, messages: list[ChatMessage], tools: list[LlmTool]
     ) -> ChatResponse:
-        """Send messages with tool definitions. Default: tools unsupported,
-        safe fallback to a plain response with no tool calls (never faked)."""
+        """Safe fallback for providers that do not support tools."""
         response = await self.send_message(messages)
         response.tool_calls = []
         return response
@@ -112,7 +165,7 @@ class AIProvider(ABC):
 
 
 class EchoProvider(AIProvider):
-    """Offline provider for development and tests. No network, no credentials."""
+    """Offline provider for development and tests. No network or credentials."""
 
     @property
     def name(self) -> str:
@@ -140,17 +193,23 @@ class EchoProvider(AIProvider):
 
 
 class OpenAICompatibleProvider(AIProvider):
-    """Minimal OpenAI-compatible `/chat/completions` client via httpx.
+    """OpenAI-compatible chat client using httpx.
 
-    Configure with AI_BASE_URL (e.g. https://api.openai.com/v1),
-    AI_MODEL, and AI_API_KEY. No hard-coded credentials.
+    Configure with AI_BASE_URL, AI_MODEL, and optionally AI_API_KEY.
+    An empty API key is supported for local servers such as llama.cpp.
+    When a key is supplied, Bearer authentication is retained.
     """
 
-    def __init__(self, base_url: str, model: str, api_key: str, timeout: float = 30.0):
-        if not api_key:
-            raise ProviderAuthError("AI_API_KEY is not set.")
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: str,
+        timeout: float = 30.0,
+    ):
         if not base_url:
             raise ProviderAuthError("AI_BASE_URL is not set.")
+
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._api_key = api_key
@@ -161,116 +220,187 @@ class OpenAICompatibleProvider(AIProvider):
         return "openai-compatible"
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
     async def send_message(self, messages: list[ChatMessage]) -> ChatResponse:
         payload = {
             "model": self._model,
-            "messages": [m.to_wire() for m in messages],
+            "messages": [message.to_wire() for message in messages],
         }
+
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
+                response = await client.post(
                     f"{self._base_url}/chat/completions",
                     headers=self._headers(),
                     json=payload,
                 )
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            raise ProviderUnavailable(f"AI provider unreachable: {exc}") from exc
-        if resp.status_code == 401:
-            raise ProviderAuthError("AI provider rejected credentials (401).")
-        if resp.status_code != 200:
+        except httpx.TimeoutException as exc:
             raise ProviderUnavailable(
-                describe_http_error(resp.status_code, resp.text, self._model)
+                f"AI provider timed out (model={self._model}): {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailable(
+                f"AI provider unreachable (model={self._model}): "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if response.status_code in (401, 403):
+            raise ProviderAuthError(
+                describe_http_error(
+                    response.status_code, response.text, self._model
+                )
             )
+
+        if response.status_code != 200:
+            raise ProviderUnavailable(
+                describe_http_error(
+                    response.status_code, response.text, self._model
+                )
+            )
+
         try:
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, ValueError) as exc:
-            raise ProviderUnavailable("Malformed AI provider response.") from exc
+            data = response.json()
+            content = data["choices"][0]["message"].get("content") or ""
+        except (KeyError, IndexError, ValueError, AttributeError) as exc:
+            raise ProviderUnavailable(
+                "Malformed AI provider response."
+            ) from exc
+
         return ChatResponse(
-            content=content, model=self._model, provider=self.name
+            content=content,
+            model=self._model,
+            provider=self.name,
+            usage=data.get("usage") or {},
         )
 
     async def stream_message(
         self, messages: list[ChatMessage]
     ) -> AsyncIterator[str]:
+        """Compatibility implementation yielding the completed response."""
         response = await self.send_message(messages)
         yield response.content
 
     async def send_message_with_tools(
         self, messages: list[ChatMessage], tools: list[LlmTool]
     ) -> ChatResponse:
-        """Full tool loop turn: sends `tools` + `tool_choice: auto`, parses
-        any `tool_calls` from the response. If the model/endpoint rejects
-        tools (HTTP 400 mentioning tools), falls back to a plain response
-        with no calls — never faked."""
-        payload: dict = {
+        """Send tool definitions and parse any returned tool calls.
+
+        Tool definitions are validated locally first: incompatible names
+        or malformed schemas raise ProviderUnavailable immediately with a
+        diagnostic (no network round-trip, no silent HTTP 400). A 400 that
+        genuinely means "tools unsupported here" falls back to a plain
+        response; every other failure (invalid definitions, auth,
+        rate-limit, upstream, network, timeout) raises with its category
+        preserved. Never fabricate tool calls.
+        """
+        if tools:
+            try:
+                validate_tool_definitions(tools)
+            except ValueError as exc:
+                raise ProviderUnavailable(
+                    f"Invalid tool definition (model={self._model}): {exc}"
+                ) from exc
+
+        payload: dict[str, Any] = {
             "model": self._model,
-            "messages": [m.to_wire() for m in messages],
+            "messages": [message.to_wire() for message in messages],
         }
+
         if tools:
             payload["tools"] = to_openai_tools(tools)
             payload["tool_choice"] = "auto"
+
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
+                response = await client.post(
                     f"{self._base_url}/chat/completions",
                     headers=self._headers(),
                     json=payload,
                 )
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            raise ProviderUnavailable(f"AI provider unreachable: {exc}") from exc
-        if resp.status_code == 401:
-            raise ProviderAuthError("AI provider rejected credentials (401).")
-        if resp.status_code == 400 and tools and "tool" in resp.text.lower():
+        except httpx.TimeoutException as exc:
+            raise ProviderUnavailable(
+                f"AI provider timed out (model={self._model}): {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailable(
+                f"AI provider unreachable (model={self._model}): "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if response.status_code in (401, 403):
+            raise ProviderAuthError(
+                describe_http_error(
+                    response.status_code, response.text, self._model
+                )
+            )
+
+        if response.status_code == 400 and tools and _is_tools_unsupported_400(
+            response.text
+        ):
             fallback = await self.send_message(messages)
             fallback.tool_calls = []
             return fallback
-        if resp.status_code != 200:
+
+        if response.status_code != 200:
             raise ProviderUnavailable(
-                describe_http_error(resp.status_code, resp.text, self._model)
+                describe_http_error(
+                    response.status_code, response.text, self._model
+                )
             )
+
         try:
-            data = resp.json()
+            data = response.json()
             message = data["choices"][0]["message"]
             content = message.get("content") or ""
-        except (KeyError, IndexError, ValueError) as exc:
-            raise ProviderUnavailable("Malformed AI provider response.") from exc
+        except (KeyError, IndexError, ValueError, AttributeError) as exc:
+            raise ProviderUnavailable(
+                "Malformed AI provider response."
+            ) from exc
+
         return ChatResponse(
             content=content,
             model=self._model,
             provider=self.name,
+            usage=data.get("usage") or {},
             tool_calls=parse_openai_tool_calls(message),
         )
 
     async def health_check(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(
-                    f"{self._base_url}/models", headers=self._headers()
+                response = await client.get(
+                    f"{self._base_url}/models",
+                    headers=self._headers(),
                 )
-                return resp.status_code == 200
-        except Exception:
+                return response.status_code == 200
+        except (httpx.HTTPError, ValueError):
             return False
 
 
 def create_provider(settings: Settings) -> AIProvider:
-    """Factory: build the configured provider. Raises ConfigError if unknown."""
-    key = settings.ai_provider.strip().lower()
-    if key == "echo":
+    """Build the configured provider."""
+    provider_key = settings.ai_provider.strip().lower()
+
+    if provider_key == "echo":
         return EchoProvider()
-    if key in ("openai", "openai-compatible", "openai_compatible"):
+
+    if provider_key in (
+        "openai",
+        "openai-compatible",
+        "openai_compatible",
+    ):
         return OpenAICompatibleProvider(
             base_url=settings.ai_base_url,
             model=settings.ai_model,
             api_key=settings.ai_api_key.get_secret_value(),
             timeout=settings.ai_timeout_seconds,
         )
+
     raise ConfigError(
         f"Unknown AI_PROVIDER '{settings.ai_provider}'. "
-        "Supported in Phase 1: 'echo', 'openai' / 'openai-compatible'."
+        "Supported providers: 'echo', 'openai', 'openai-compatible'."
     )

@@ -54,9 +54,14 @@ class ToolExecutor:
         def elapsed_ms() -> int:
             return int((time.monotonic() - started) * 1000)
 
-        # 1. Find tool.
+        # 1. Find tool. The model returns external (normalized) names
+        # (e.g. "system_info"); direct callers may still use internal
+        # dotted names ("system.info"). Both resolve to the same
+        # implementation; unknown/malformed names fail safely here and
+        # never execute an unrelated tool.
         try:
-            tool = self.registry.get(tool_name)
+            resolve = getattr(self.registry, "resolve", self.registry.get)
+            tool = resolve(tool_name)
         except ToolError as exc:
             self.audit.record(
                 tool_name=tool_name,
@@ -69,6 +74,9 @@ class ToolExecutor:
                 error=str(exc),
             )
             return ToolResult(ok=False, error=f"Unknown tool '{tool_name}'.")
+        # Audit under the canonical internal name so history stays stable
+        # regardless of which spelling the model returned.
+        tool_name = tool.name
 
         # 2. Validate input.
         try:

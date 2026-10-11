@@ -62,7 +62,7 @@ class _Capture:
 def tools():
     return [
         LlmTool(
-            name="system.info",
+            name="system_info",
             description="Get system info.",
             parameters={"type": "object", "properties": {}},
         )
@@ -120,7 +120,7 @@ async def test_with_tools_request_shape(monkeypatch, messages, tools):
     assert resp.tool_calls == []
     body = capture.requests[0]
     assert body["tool_choice"] == "auto"
-    assert body["tools"][0]["function"]["name"] == "system.info"
+    assert body["tools"][0]["function"]["name"] == "system_info"
     for msg in body["messages"]:
         assert "tool_calls" not in msg
 

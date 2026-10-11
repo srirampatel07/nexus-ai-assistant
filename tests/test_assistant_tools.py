@@ -134,7 +134,8 @@ async def test_approved_write_succeeds_in_loop(wired, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_max_iterations_stops_loop(wired):
+async def test_max_iterations_stops_loop(wired, tmp_path):
+    """Budget exhaustion: tools stop, one tool-free synthesis follows."""
     settings, registry, executor = wired
     settings.max_tool_iterations = 2
     assistant = _assistant(
@@ -147,7 +148,11 @@ async def test_max_iterations_stops_loop(wired):
         registry,
     )
     reply = await assistant.achat("loop forever please")
-    assert "couldn't compose" in reply
+    # ScriptedProvider.send_message answers the synthesis turn ("plain").
+    assert reply == "plain"
+    # Exactly the budgeted tool executions happened — nothing more.
+    audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(audit_lines) == 2
 
 
 @pytest.mark.asyncio

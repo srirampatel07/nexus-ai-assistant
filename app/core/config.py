@@ -106,17 +106,42 @@ class Settings(BaseSettings):
         ]
     )
 
-    # --- Vision interface (Phase 5) ---
-    # Default text model (AI_MODEL, e.g. openai/gpt-oss-120b) is text-only.
-    # Image analysis uses VISION_MODEL only, via the same OpenAI-compatible
-    # endpoint + API key (no second provider). Verified against Groq docs:
-    # gpt-oss-120b is INPUT Text / OUTPUT Text; vision lives on
-    # qwen/qwen3.8-27b (20 MB limit, max 3 images, 2048 tokens/image).
+    # --- Vision interface (Phase 5; local mode since vision-local update) ---
+    # Image analysis uses VISION_MODEL only (never AI_MODEL) through an
+    # OpenAI-compatible chat endpoint. VISION_PROVIDER selects the mode:
+    #   "openai-compatible" (default) — VISION_BASE_URL when set, else the
+    #     shared AI_BASE_URL; key is VISION_API_KEY or AI_API_KEY.
+    #   "local" — fully local vision: VISION_BASE_URL must be an explicit
+    #     loopback endpoint (never hosted), VISION_MODEL is the local model
+    #     id, and VISION_API_KEY stays empty (no credential is sent).
     vision_enabled: bool = Field(default=True)
-    vision_model: str = Field(default="qwen/qwen3.8-27b")
+    vision_provider: str = Field(default="openai-compatible")
+    vision_model: str = Field(default="openrouter/free")
+    vision_base_url: str = Field(default="")
+    vision_api_key: SecretStr = Field(default=SecretStr(""))
+    # When true (default), /vision hands the vision report to the text
+    # model for a synthesized final answer — switching models sequentially
+    # via the launcher handoff when the text server is down. When false,
+    # /vision shows the vision report directly without any text call.
+    vision_text_synthesis: bool = Field(default=True)
     vision_max_bytes: int = Field(default=10_485_760)
     vision_max_dim: int = Field(default=2048)
     vision_jpeg_quality: int = Field(default=85)
+
+    # --- Web + browser (Phase 6) ---
+    # Search uses the keyless DuckDuckGo HTML results page by default
+    # (verified live; real result links). A legacy Instant Answer JSON
+    # endpoint still parses when configured; fetch/browser share SSRF
+    # protection + size caps.
+    web_enabled: bool = Field(default=True)
+    web_search_provider: str = Field(default="duckduckgo")
+    web_search_url: str = Field(default="https://html.duckduckgo.com/html/")
+    web_search_timeout: float = Field(default=15.0)
+    web_search_max_results: int = Field(default=8)
+    web_fetch_timeout: float = Field(default=20.0)
+    web_fetch_max_bytes: int = Field(default=1_048_576)
+    web_fetch_max_redirects: int = Field(default=5)
+    web_text_max_chars: int = Field(default=20000)
 
     def model_dump_safe(self) -> dict:
         """Return settings as a JSON-serializable dict with secrets redacted."""
@@ -124,6 +149,11 @@ class Settings(BaseSettings):
         data["ai_api_key"] = (
             "***"
             if self.ai_api_key.get_secret_value()
+            else ""
+        )
+        data["vision_api_key"] = (
+            "***"
+            if self.vision_api_key.get_secret_value()
             else ""
         )
         return data

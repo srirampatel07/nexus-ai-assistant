@@ -20,7 +20,14 @@ class Plan:
 
 
 class Planner:
-    """Phase 1 planner: always responds directly (no tools registered yet)."""
+    """Diagnostic planner: always responds directly.
+
+    Tool selection is NOT done here — the agent loop in
+    `NexusAssistant._achat_with_tools` offers the registry's tool
+    definitions to the model and dispatches returned calls through the
+    executor whenever tools are enabled. This plan record is diagnostic
+    only and never blocks the tool path.
+    """
 
     def plan(self, user_text: str, history_count: int = 0) -> Plan:
         text = user_text.strip()
@@ -31,5 +38,8 @@ class Planner:
             )
         return Plan(
             action=PlanAction.RESPOND_DIRECTLY,
-            reasoning="Phase 1 has no tools; answer conversationally.",
+            reasoning=(
+                "Conversational reply; tool selection is handled dynamically "
+                "by the agent loop when a registry/executor is configured."
+            ),
         )

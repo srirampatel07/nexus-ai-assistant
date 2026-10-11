@@ -237,6 +237,62 @@ async def test_vision_answer_survives_text_model(tmp_path):
     assert "not able to view" not in reply.lower()
 
 
+class OfflineTextProvider(EchoProvider):
+    """Text brain down: health fails and any send attempt is a test error."""
+
+    def __init__(self):
+        self.send_calls = 0
+        self.health_calls = 0
+
+    async def health_check(self):
+        self.health_calls += 1
+        return False
+
+    async def send_message(self, messages):
+        self.send_calls += 1
+        raise AssertionError("text brain must not be contacted when offline")
+
+    async def send_message_with_tools(self, messages, tools):
+        self.send_calls += 1
+        raise AssertionError("text brain must not be contacted when offline")
+
+
+@pytest.mark.asyncio
+async def test_vision_report_shown_directly_when_text_offline(tmp_path):
+    """Live /vision failure: vision POST 200 followed by text ConnectError
+    must surface the good vision description, not the generic brain error."""
+    src = _make_png(tmp_path / "barn.png")
+    vision = FakeDescriber(text="A red barn with white trim.")
+    text = OfflineTextProvider()
+    a = _assistant(tmp_path, describer=vision, provider=text)
+    reply = await a.achat_with_image(str(src), "What do you see?")
+    assert vision.calls == 1
+    assert text.health_calls == 1
+    assert text.send_calls == 0  # synthesis never attempted
+    assert "red barn" in reply.lower()
+    assert "trouble reaching" not in reply.lower()
+    assert "offline" in reply.lower()  # honest about bypassing synthesis
+    # History/memory path intact: text-only entries, no bytes.
+    history = a.get_history()
+    assert len(history) == 2
+    assert "barn.png" in history[0].content
+    assert "red barn" in history[1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_vision_uses_synthesis_when_text_online(tmp_path):
+    """Normal design preserved: reachable text brain still synthesizes."""
+    src = _make_png(tmp_path / "barn.png")
+    cap = CapturingProvider()
+    a = _assistant(
+        tmp_path, describer=FakeDescriber(text="A red barn."), provider=cap
+    )
+    reply = await a.achat_with_image(str(src), "What is this?")
+    assert "You said:" in reply  # echo synthesis ran
+    assert "text brain is offline" not in reply.lower()
+    assert cap.seen  # augmented prompt reached the text model
+
+
 @pytest.mark.asyncio
 async def test_augmented_prompt_attributes_vision_report(tmp_path):
     """Pin the anti-refusal framing: the text brain must be told the

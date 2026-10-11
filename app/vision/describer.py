@@ -1,12 +1,14 @@
-"""Vision describers (Phase 5.0).
+"""Vision describers (Phase 5.0; local mode added later).
 
 `VisionDescriber` turns upload-ready JPEG bytes into untrusted text.
 Two implementations:
 
-- `GroqVisionDescriber`: same OpenAI-compatible endpoint + API key as the
-  text brain, but with the separate `VISION_MODEL` (default
-  `qwen/qwen3.8-27b` — the only Groq-hosted vision model per docs/vision;
-  `openai/gpt-oss-120b` is text-only and must never receive images).
+- `OpenRouterVisionDescriber`: OpenAI-compatible chat endpoint with the
+  separate `VISION_MODEL`, never `AI_MODEL`. Hosted mode reuses
+  `VISION_API_KEY` or `AI_API_KEY`; local mode (`vision_provider=local`)
+  sends no credential to its loopback endpoint. The regular chat model
+  (`AI_MODEL`) never receives images; vision requests always carry
+  `VISION_MODEL` explicitly.
   Sends `content: [{type: text}, {type: image_url, url: data:...;base64}]`.
 - `MetadataDescriber`: offline fallback. No network, no cost, no upload —
   dimensions/format/size only, honestly labeled as metadata.
@@ -83,22 +85,26 @@ class MetadataDescriber:
         )
 
 
-class GroqVisionDescriber:
-    """Groq-hosted vision model via the OpenAI-compatible chat endpoint.
+class OpenRouterVisionDescriber:
+    """Vision model via an OpenAI-compatible chat endpoint (hosted or local).
 
-    Uses VISION_MODEL (e.g. qwen/qwen3.8-27b), never AI_MODEL. Same base URL
-    and API key as the text provider — no second vendor, no new secret.
+    Uses VISION_MODEL, never AI_MODEL. In hosted mode the key is
+    VISION_API_KEY or AI_API_KEY; in local mode (`vision_provider=local`)
+    the key stays empty and no `Authorization` header is sent. The class
+    itself is endpoint-agnostic — the factory guarantees local mode only
+    ever receives a loopback base URL, so images can never reach a hosted
+    service through it.
     """
 
     def __init__(
         self, base_url: str, model: str, api_key: str, timeout: float = 30.0
     ) -> None:
-        if not api_key:
-            raise ProviderAuthError("AI_API_KEY is not set.")
         if not base_url:
-            raise ProviderAuthError("AI_BASE_URL is not set.")
+            raise ProviderAuthError("Vision base URL is not set.")
         if not model:
             raise ProviderAuthError("VISION_MODEL is not set.")
+        # Empty api_key is valid (local servers such as llama.cpp send no
+        # credential); _headers() omits the Authorization header then.
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._api_key = api_key
@@ -108,11 +114,15 @@ class GroqVisionDescriber:
     def model(self) -> str:
         return self._model
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
     def _payload(
         self, image_data: bytes, mime: str, question: str
@@ -142,6 +152,10 @@ class GroqVisionDescriber:
     ) -> VisualDescription:
         if not image_data:
             raise ProviderUnavailable("Empty image data.")
+        if mime not in ("image/jpeg", "image/png", "image/webp"):
+            # The loader normalizes to JPEG, but never trust the caller:
+            # refuse anything outside the OpenAI-compatible image types.
+            raise ProviderUnavailable(f"Unsupported image MIME type: {mime}.")
         log.debug(
             "vision request model=%s image_bytes=%d mime=%s",
             self._model,
@@ -156,13 +170,28 @@ class GroqVisionDescriber:
                     headers=self._headers(),
                     json=payload,
                 )
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            raise ProviderUnavailable(f"Vision model unreachable: {exc}") from exc
-        if resp.status_code == 401:
-            raise ProviderAuthError("Vision model rejected credentials (401).")
+        except httpx.TimeoutException as exc:
+            raise ProviderUnavailable(
+                f"Vision model timed out (model={self._model}): {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailable(
+                f"Vision model unreachable (model={self._model}): "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        if resp.status_code in (401, 403):
+            raise ProviderAuthError(
+                describe_http_error(resp.status_code, resp.text, self._model)
+            )
+        if resp.status_code == 429:
+            raise ProviderUnavailable(
+                describe_http_error(resp.status_code, resp.text, self._model)
+            )
         if resp.status_code != 200:
             # describe_http_error sanitizes; body never contains our base64
-            # because it is the *response* body, not the request.
+            # because it is the *response* body, not the request. A 400 here
+            # usually means the model cannot take images — surfaced honestly,
+            # never converted into a fabricated description.
             raise ProviderUnavailable(
                 describe_http_error(resp.status_code, resp.text, self._model)
             )
@@ -180,7 +209,7 @@ class GroqVisionDescriber:
                 )
             text = str(content).strip()
             finish = str(choice.get("finish_reason") or "")
-        except (KeyError, IndexError, ValueError) as exc:
+        except (KeyError, IndexError, ValueError, AttributeError) as exc:
             raise ProviderUnavailable(
                 "Malformed vision model response."
             ) from exc
@@ -206,8 +235,12 @@ class GroqVisionDescriber:
                     f"{self._base_url}/models", headers=self._headers()
                 )
                 return resp.status_code == 200
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             return False
+
+
+# Backwards-compatible alias: the Phase 5 name for the same class.
+GroqVisionDescriber = OpenRouterVisionDescriber
 
 
 def sanitize_vision_log(value: str) -> str:

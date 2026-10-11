@@ -23,8 +23,11 @@ from app.vision.errors import ImageRejectedError, VisionUnavailableError
 # Conservative allowlist: common raster formats Pillow reads on Windows.
 ALLOWED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"})
 
-# Groq hard limit for an image request (docs/vision): 20 MB.
-GROQ_IMAGE_REQUEST_LIMIT_BYTES = 20 * 1024 * 1024
+# Provider image-request ceiling (OpenAI-compatible endpoints commonly
+# enforce ~20 MB per image request): 20 MB.
+IMAGE_REQUEST_LIMIT_BYTES = 20 * 1024 * 1024
+# Backwards-compatible alias for the Phase 5 name.
+GROQ_IMAGE_REQUEST_LIMIT_BYTES = IMAGE_REQUEST_LIMIT_BYTES
 
 # Decompression-bomb guard: reject images with more pixels than this.
 # Pillow warns at ~178 MP by default; NEXUS is stricter (50 MP).
@@ -193,7 +196,7 @@ def load_validated_image(
             f"Cannot process image {basename}: {type(exc).__name__}"
         ) from exc
 
-    if len(data) > min(max_bytes, GROQ_IMAGE_REQUEST_LIMIT_BYTES):
+    if len(data) > min(max_bytes, IMAGE_REQUEST_LIMIT_BYTES):
         raise ImageRejectedError(
             f"Processed image {basename} still exceeds the size limit "
             f"({len(data)} bytes). Try a smaller image."

@@ -117,7 +117,8 @@ async def test_metadata_describer_is_offline():
 
 
 def test_factory_echo_is_offline():
-    desc = create_describer(Settings(ai_provider="echo"))
+    desc = create_describer(Settings(ai_provider="echo",
+                                     vision_provider="openai-compatible"))
     assert isinstance(desc, MetadataDescriber)
 
 
@@ -126,18 +127,28 @@ def test_factory_openai_uses_vision_model():
         ai_provider="openai-compatible",
         ai_api_key="k",
         ai_base_url="https://api.groq.com/openai/v1",
+        vision_provider="openai-compatible",
         vision_model="qwen/qwen3.8-27b",
+        vision_api_key="",
     )
     desc = create_describer(s)
     assert isinstance(desc, GroqVisionDescriber)
     assert desc.model == "qwen/qwen3.8-27b"
 
 
-def test_groq_requires_credentials():
+def test_groq_requires_endpoint_and_model():
     with pytest.raises(ProviderAuthError):
         GroqVisionDescriber(base_url="", model="m", api_key="k")
     with pytest.raises(ProviderAuthError):
-        GroqVisionDescriber(base_url="https://x/v1", model="m", api_key="")
+        GroqVisionDescriber(base_url="https://x/v1", model="", api_key="k")
+
+
+def test_empty_key_allowed_sends_no_bearer():
+    """Local servers take no credential: empty key omits the header."""
+    desc = GroqVisionDescriber(
+        base_url="http://127.0.0.1:8081/v1", model="m", api_key=""
+    )
+    assert "Authorization" not in desc._headers()
 
 
 @pytest.mark.asyncio

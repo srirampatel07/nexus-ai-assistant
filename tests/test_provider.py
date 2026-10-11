@@ -58,9 +58,19 @@ def test_factory_rejects_unknown():
         create_provider(Settings(ai_provider="nope"))
 
 
-def test_openai_provider_requires_key():
-    with pytest.raises(ProviderAuthError):
-        OpenAICompatibleProvider(base_url="https://example.com/v1", model="m", api_key="")
+def test_openai_provider_allows_empty_key_for_local_servers():
+    """Empty API keys are supported (local llama.cpp); Bearer is omitted."""
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1", model="m", api_key=""
+    )
+    assert "Authorization" not in provider._headers()
+
+
+def test_openai_provider_sends_bearer_when_key_set():
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1", model="m", api_key="k"
+    )
+    assert provider._headers()["Authorization"] == "Bearer k"
 
 
 def test_openai_provider_requires_url():

@@ -1,4 +1,4 @@
-"""NEXUS entry point (Phase 5: text + voice + vision + health).
+"""NEXUS entry point (Phase 6: text + voice + vision + web + health).
 
 Usage:
     python run.py --text     # interactive text conversation (tools enabled)
@@ -161,14 +161,15 @@ def cmd_health(debug: bool = False) -> int:
     return 0 if healthy else 1
 
 
-def cmd_text(debug: bool = False) -> int:
+def cmd_text(debug: bool = False, assistant=None) -> int:  # type: ignore[no-untyped-def]
     settings = get_settings()
     if debug:
         settings.text_mode_debug = True
     setup_logging("DEBUG" if debug else settings.log_level)
-    assistant = build_assistant(settings)
+    if assistant is None:
+        assistant = build_assistant(settings)
 
-    print(f"{settings.app_name} v{__version__} - text mode (Phase 5, tools + vision enabled).")
+    print(f"{settings.app_name} v{__version__} - text mode (Phase 6, tools + vision + web enabled).")
     print("Type /help for commands, /exit to quit.")
     if debug:
         print(f"[debug] provider={settings.ai_provider} model={settings.ai_model}")
@@ -192,10 +193,17 @@ def cmd_text(debug: bool = False) -> int:
             continue
         if low == "/tools":
             tools = assistant.registry.list_tools() if assistant.registry else []
-            print("Available tools:")
+            print("Available tools (internal name; model-visible name in parentheses):")
             for tool in tools:
                 confirm = "needs approval" if tool.requires_confirmation else "auto"
-                print(f"- {tool.name} [{tool.category}/{tool.risk_level.value}/{confirm}]")
+                try:
+                    from app.tools.schemas import to_external_name
+
+                    external = to_external_name(tool.name)
+                    label = f"{tool.name} (model: {external})" if external != tool.name else tool.name
+                except Exception:
+                    label = tool.name
+                print(f"- {label} [{tool.category}/{tool.risk_level.value}/{confirm}]")
                 print(f"    {tool.description}")
             continue
         if low == "/memory":

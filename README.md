@@ -1,26 +1,44 @@
 # NEXUS — Personal AI Operating Assistant
 
 NEXUS is a modular, provider-independent personal AI operating assistant.
-Phases 1–4 are complete (foundation, safe tool use, persistent memory,
-hands-free voice). Phase 5.0 adds a local image-file vision interface
-around the same assistant: point NEXUS at an image with `/vision` for a
-Groq-hosted visual description. Phase 5.0 is implemented and awaiting
-release. See `docs/VISION.md` for the vision guide and `docs/VOICE.md`
-for the voice guide.
+Phases 1–5 are complete (foundation, safe tool use, persistent memory,
+hands-free voice, local image-file vision). Phase 6.0 adds web search,
+page retrieval, and reader browser sessions around the same assistant:
+ask about current information and NEXUS researches it with cited
+sources. Phase 6.0 is implemented and awaiting release.
+See `docs/WEB.md` for the web guide, `docs/VISION.md` for vision,
+and `docs/VOICE.md` for voice.
 
 Personality: calm, intelligent, concise, helpful. NEXUS never pretends an
 action succeeded when it did not.
 
-## Phase 5.0 — Vision (implemented, awaiting release)
+## Phase 6.0 — Web + browser (implemented, awaiting release)
+
+- Web search (`web.search`, keyless instant answers) and page retrieval
+  (`web.fetch`) through the standard tool pipeline — same registry,
+  permissions, confirmations, and audit as every other tool
+- Reader browser sessions (`browser.navigate/read/links/click/back/close`):
+  document navigation with link ids; `browser.click` needs approval
+- Visible Brave launcher (`brave.open`, LOW, no approval): opens any valid
+  public http(s) URL or a current-search reference (`result 2`, `second`,
+  `first`, `last`) in your real Brave desktop window; validated first,
+  audited like every tool
+- SSRF protection on every request and redirect hop (localhost, private
+  nets, metadata endpoints refused); size/type caps; readable-text
+  extraction with source URLs for citations
+- Web content is treated as untrusted evidence: cited, never obeyed
+- Full details in `docs/WEB.md`
+
+## Phase 5.0 — Vision (complete)
 
 - Local image-file input (`/vision <image-path> [question]`) around the
   same `NexusAssistant` (memory + tools work unchanged)
 - Pillow validation first: allowed-roots confinement, type/size caps,
   EXIF-orientation correction, transparency flattened onto white,
   EXIF/GPS stripped — then one upload to the vision model
-- Groq-hosted vision (`VISION_MODEL`, default `qwen/qwen3.8-27b`) via the
-  existing `AI_BASE_URL` + `AI_API_KEY`; the default text model
-  (`openai/gpt-oss-120b`) is text-only and never receives images
+- OpenRouter-hosted vision (`VISION_MODEL`, default `openrouter/free`,
+  independently configurable) reusing `AI_API_KEY`; the chat model
+  (`AI_MODEL`) never receives images
 - Ordinary chat and voice never upload images; offline metadata fallback
   when no vision backend is configured
 - Full details in `docs/VISION.md`
@@ -51,7 +69,7 @@ unchanged underneath.
 
 ## Phase 2 — Safe tool use
 
-- Tool registry (`app/tools`): 11 tools across system/filesystem/terminal/applications
+- Tool registry (`app/tools`): 20 tools across system/filesystem/terminal/applications/web/browser/brave
 - Permission model: SAFE / LOW / MEDIUM / HIGH / BLOCKED (`app/security/policy.py`)
 - Confirmation: MEDIUM+ tools pause for `Allow? [y/N]`; auto-deny when non-interactive
 - Terminal: PowerShell, `shell=False`, timeout, output caps, blocked/confirm command policy
@@ -155,13 +173,16 @@ NEXUS/
                redaction.py categories.py
   app/voice/  audio.py stt.py tts.py session.py factories.py errors.py
   app/vision/  loader.py describer.py factories.py errors.py
+  app/web/  ssrf.py extract.py client.py errors.py
+  app/browser/  session.py errors.py
   tests/      conftest + test_config/provider/assistant/core/prompts
               + test_tool_registry/audit/filesystem/terminal/apps_system
               + test_executor/tool_calls/assistant_tools/tool_wire
               + test_memory/memory_integration
               + test_voice_audio/backends/session/cli
               + test_vision_loader/describer/assistant/security
-  docs/TOOLS.md docs/MEMORY.md docs/VOICE.md docs/VISION.md
+              + test_web_search/fetch/ssrf/browser/integration
+  docs/TOOLS.md docs/MEMORY.md docs/VOICE.md docs/VISION.md docs/WEB.md
   data/ logs/ scripts/ frontend/dashboard/  (placeholders for later phases)
   run.py  requirements.txt  .env.example  README.md
 ```
@@ -171,5 +192,6 @@ NEXUS/
 - Phase 2: tool registry, computer/filesystem/terminal tools, permissions, audit
 - Phase 3: SQLite memory + context retrieval
 - Phase 4: voice interface (offline STT/TTS, hands-free)
-- Phase 5.0: vision (local image-file input, Groq-hosted description) — implemented, awaiting release
+- Phase 5.0: vision (local image-file input, Groq-hosted description)
+- Phase 6.0: web search, page retrieval, reader browser sessions — implemented, awaiting release
 - Later: screenshots/camera + safe UI actions, IoT (MQTT/ESP32), API, dashboard, autonomous multi-step tasks

@@ -29,6 +29,45 @@ async def test_time_intent():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what time is it?",
+        "What's the date today?",
+        "current time",
+        "tell me the time",
+        "what day is it?",
+        "time",
+    ],
+)
+async def test_genuine_time_questions_answered_locally(question):
+    a = make_assistant()
+    assert "currently" in (await a.achat(question)).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "Search for the latest Python release. Give me the version number, "
+        "release date if available, and two source URLs. "
+        "Keep the answer under 120 words.",
+        'Use web.search to search for "latest Python release official '
+        'Python.org". Show me the actual result titles, snippets, and URLs '
+        "returned by the tool. Do not use system.info, system.cpu, or any "
+        "time tool.",
+    ],
+)
+async def test_search_requests_are_not_answered_with_time(user_text):
+    """Live Phase 6 failure: date/time words inside a research request must
+    not trigger the local clock shortcut; the request must reach the model."""
+    a = make_assistant()
+    reply = await a.achat(user_text)
+    assert "currently" not in reply.lower()
+    assert reply.startswith("You said:")  # EchoProvider proves model reached
+
+
+@pytest.mark.asyncio
 async def test_empty_input_prompts_user():
     a = make_assistant()
     reply = await a.achat("   ")

@@ -1,7 +1,7 @@
-# NEXUS Vision (Phase 5.0)
+# NEXUS Vision (Phase 5.0; OpenRouter-hosted)
 
-Local image-file input with a Groq-hosted vision model. No screenshots,
-no camera, no local heavy models, no second provider in this phase.
+Local image-file input with an OpenRouter-hosted vision model. No screenshots,
+no camera, no local heavy models, no second credential in this phase.
 
 ## What it does
 
@@ -16,21 +16,24 @@ no camera, no local heavy models, no second provider in this phase.
   downscales to `VISION_MAX_DIM`, re-encodes to JPEG (4:4:4, no
   subsampling loss on diagram text).
 * Sends that single image + question to `VISION_MODEL` (default
-  `qwen/qwen3.8-27b`) through the existing `AI_BASE_URL` + `AI_API_KEY`.
+  `openrouter/free`) through `VISION_BASE_URL` (or `AI_BASE_URL` when
+  unset), reusing `AI_API_KEY` — no second vision credential.
 * Returns the answer through the normal assistant pipeline, so tools,
   memory, and voice behave unchanged. History stores text only
   (`<question> [image: <basename>]`), never bytes.
 
-Normal text model (`AI_MODEL`, e.g. `openai/gpt-oss-120b`) is text-only
-per Groq docs (`INPUT Text / OUTPUT Text`) and never receives images.
+The chat model (`AI_MODEL`) never receives images; only `VISION_MODEL`
+does, and only on an explicit `/vision` call.
 
-## Model basis (verified from Groq docs)
+## Model basis
 
-* `openai/gpt-oss-120b`: text in/out, tool use, no vision.
-* `qwen/qwen3.8-27b`: the Groq-hosted vision model (`docs/vision`):
-  OpenAI-compatible `image_url` (URL or `data:...;base64`), 20 MB limit,
-  max 3 images/request, 2048 tokens/image, tool use supported.
-* NEXUS sends 1 image/request as `data:image/jpeg;base64`.
+* `VISION_MODEL` (default `openrouter/free`) is configured independently
+  of `AI_MODEL`, so either can change without touching the other.
+* Request format is OpenAI-compatible `image_url` (`data:...;base64`),
+  1 image/request as `data:image/jpeg;base64`.
+* If the configured vision model cannot take images (HTTP 400) or the
+  endpoint fails (auth/rate-limit/upstream/network), the failure is
+  reported honestly — never converted into a fabricated description.
 
 ## Privacy and disclosure
 
@@ -52,11 +55,15 @@ per Groq docs (`INPUT Text / OUTPUT Text`) and never receives images.
 
 ```
 VISION_ENABLED=true
-VISION_MODEL=qwen/qwen3.8-27b
+VISION_MODEL=openrouter/free
+VISION_BASE_URL=
 VISION_MAX_BYTES=10485760
 VISION_MAX_DIM=2048
 VISION_JPEG_QUALITY=85
 ```
+
+`VISION_BASE_URL` empty means "reuse `AI_BASE_URL`". `VISION_MODEL` is
+independent of `AI_MODEL`; the API key is always the shared `AI_API_KEY`.
 
 Filesystem confinement reuses `NEXUS_ALLOWED_ROOTS` (default
 `C:\chanti\nexus`). No separate vision roots in 5.0.
@@ -65,7 +72,7 @@ Filesystem confinement reuses `NEXUS_ALLOWED_ROOTS` (default
 
 * Inside allowed roots only (`..` escapes rejected; basename in errors).
 * Extensions: `.jpg .jpeg .png .webp .bmp`.
-* File size `<= VISION_MAX_BYTES` (default 10 MB, always `<` 20 MB Groq cap).
+* File size `<= VISION_MAX_BYTES` (default 10 MB, always `<` the 20 MB image-request ceiling).
 * `Pillow.verify()` + 50 MP pixel-count bomb guard + dimension downscale.
 * EXIF/GPS stripped (fresh RGB re-encode, no `exif=` on save); output JPEG.
 * Voice mode: vision is text-CLI only in 5.0; spoken replies reuse TTS.
@@ -75,7 +82,7 @@ Filesystem confinement reuses `NEXUS_ALLOWED_ROOTS` (default
 | Module | Role |
 |---|---|
 | `app/vision/loader.py` | confine/verify/resize/EXIF-strip → `ValidatedImage` |
-| `app/vision/describer.py` | `GroqVisionDescriber` / `MetadataDescriber` → untrusted text |
+| `app/vision/describer.py` | `OpenRouterVisionDescriber` / `MetadataDescriber` → untrusted text |
 | `app/vision/factories.py` | `create_describer(settings)` (echo/no-key → offline) |
 | `app/vision/errors.py` | `VisionError`, `VisionUnavailableError`, `ImageRejectedError` |
 | `app/brain/assistant.py` | `achat_with_image` / `chat_with_image` (description injection) |

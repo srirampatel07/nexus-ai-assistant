@@ -13,3 +13,9 @@ logs/*.jsonl
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local environment backup
+.env.backup-local-model
+
+# Local model server logs
+logs/servers/*.log

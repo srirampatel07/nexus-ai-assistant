@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from app import __version__
 from app.brain.assistant import NexusAssistant
 from app.brain.provider import create_provider
@@ -11,9 +13,15 @@ from app.tools import build_default_executor, build_default_registry
 
 
 def build_assistant(
-    settings: Settings | None = None, conversation_id: str | None = None
+    settings: Settings | None = None,
+    conversation_id: str | None = None,
+    synthesis_handoff: Callable[[], tuple[bool, str]] | None = None,
 ) -> NexusAssistant:
-    """Build the assistant: provider, tools, and persistent memory."""
+    """Build the assistant: provider, tools, and persistent memory.
+
+    `synthesis_handoff` is an optional one-shot vision -> text switch
+    (launcher-owned); None keeps the standalone vision fallback.
+    """
     resolved = settings or get_settings()
     provider = create_provider(resolved)
     registry = build_default_registry(resolved)
@@ -26,6 +34,7 @@ def build_assistant(
         executor=executor,
         conversation_id=conversation_id,
         memory=memory,
+        synthesis_handoff=synthesis_handoff,
     )
 
 
@@ -35,7 +44,7 @@ def get_nexus_info(settings: Settings | None = None) -> dict:
     return {
         "name": resolved.app_name,
         "version": __version__,
-        "phase": 5,
+        "phase": 6,
         "environment": resolved.environment,
         "ai_provider": resolved.ai_provider,
         "ai_model": resolved.ai_model,
@@ -43,4 +52,6 @@ def get_nexus_info(settings: Settings | None = None) -> dict:
         "memory_database": resolved.memory_database_path,
         "vision_enabled": resolved.vision_enabled,
         "vision_model": resolved.vision_model,
+        "web_enabled": resolved.web_enabled,
+        "web_search_provider": resolved.web_search_provider,
     }

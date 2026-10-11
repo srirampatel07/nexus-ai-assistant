@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.vision.describer import (
     GroqVisionDescriber,
     MetadataDescriber,
+    OpenRouterVisionDescriber,
     VisionDescriber,
     VisualDescription,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "GroqVisionDescriber",
     "ImageRejectedError",
     "MetadataDescriber",
+    "OpenRouterVisionDescriber",
     "ValidatedImage",
     "VisionDescriber",
     "VisionError",
