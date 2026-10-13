@@ -1,7 +1,7 @@
-"""One-click local AI launcher for NEXUS (Windows).
+"""One-click NVIDIA-cloud launcher for NEXUS (Windows).
 
-`servers.py` owns llama-server lifecycle (discovery, ownership-gated
-start/stop, readiness polling); `menu.py` drives the interactive menu on
-top of the existing `run.py` text interface. Nothing here replaces the
-assistant — it only ensures a model server is up before delegating.
+`menu.py` drives the interactive cloud menu on top of the existing `run.py`
+text interface. All AI inference uses the NVIDIA cloud API; nothing here
+starts local model servers. Nothing here replaces the assistant — it only
+delegates to the standard assistant pipeline.
 """

@@ -144,7 +144,11 @@ def test_groq_requires_endpoint_and_model():
 
 
 def test_empty_key_allowed_sends_no_bearer():
-    """Local servers take no credential: empty key omits the header."""
+    """Dev transports take no credential: empty key omits the header.
+
+    (NVIDIA cloud vision always supplies a key; the factory raises when
+    it is missing. This tolerance is transport-level only.)
+    """
     desc = GroqVisionDescriber(
         base_url="http://127.0.0.1:8081/v1", model="m", api_key=""
     )

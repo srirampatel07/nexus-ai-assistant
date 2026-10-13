@@ -1,26 +1,45 @@
-"""Speech-to-text abstraction (Phase 4).
+"""Speech-to-text backends (NVIDIA cloud + scripted headless).
 
-Production STT can use local Faster-Whisper or offline Vosk.
-ScriptedSTT is used by tests/headless runs.
+Live microphone transcription uses the verified NVIDIA hosted ASR
+capability — `nvidia/parakeet-ctc-1_1b-asr` (English) served through an
+NVCF function invocation over HTTPS:
 
-Audio is processed in memory and is never stored by this module.
+    POST https://<function-id>.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions
+    Authorization: Bearer <NVIDIA_API_KEY>   (nvapi-... from build.nvidia.com)
+    multipart/form-data: file=<WAV audio>, language=en-US
+
+Verified live (HTTP 200, Oct 2026): silence WAV -> {"text": ""};
+Magpie-generated "Hello from NEXUS voice test." -> the same sentence.
+No local AI speech models are used anywhere: requesting whisper/vosk
+raises an explicit error. `ScriptedSTT` replays canned transcripts for
+headless pipeline checks (`--script`) and tests — no audio, no network.
+
+Audio is encoded to WAV in memory and sent to NVIDIA for transcription,
+then dropped. Raw audio is never written to disk or logged, and the API
+key never appears in errors or logs.
 """
 
 from __future__ import annotations
 
-import io
-import json
-import wave
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from app.core.logger import get_logger
+from app.voice.audio import pcm_to_wav_bytes
 from app.voice.errors import STTError, STTUnavailableError, VoiceCancelledError
 
-VOSK_MODEL_DOWNLOAD = (
-    "https://alphacephei.com/vosk/models/"
-    "vosk-model-small-en-us-0.15.zip"
-)
+log = get_logger("nexus.voice.stt")
+
+# Verified NVIDIA STT invocation (public routing ID, not a secret).
+# Model: nvidia/parakeet-ctc-1_1b-asr (English). Function page:
+# https://build.nvidia.com/nvidia/parakeet-ctc-1_1b-asr/api
+DEFAULT_STT_FUNCTION_ID = "1598d209-5e27-4d3c-8079-4751568b1081"
+DEFAULT_STT_MODEL = "nvidia/parakeet-ctc-1_1b-asr"
+
+
+def default_stt_base_url(function_id: str = DEFAULT_STT_FUNCTION_ID) -> str:
+    """Derive the NVCF invocation base URL for a speech function ID."""
+    return f"https://{function_id}.invocation.api.nvcf.nvidia.com"
 
 
 @dataclass
@@ -41,263 +60,6 @@ class SpeechToText(Protocol):
     def transcribe(self, pcm: bytes, sample_rate: int) -> TranscriptionResult:
         """Transcribe one utterance."""
         ...
-
-
-class WhisperSTT:
-    """Local Faster-Whisper speech recognizer.
-
-    No audio is uploaded to a server.
-    The model is downloaded once and then runs locally.
-    """
-
-    def __init__(
-        self,
-        model_path: str = "small.en",
-        language: str = "en",
-        device: str = "cpu",
-        compute_type: str = "int8",
-    ) -> None:
-        self.model_path = model_path
-        self.language = language
-        self.device = device
-        self.compute_type = compute_type
-        self._model = None
-
-    def _load(self):  # type: ignore[no-untyped-def]
-        if self._model is not None:
-            return self._model
-
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise STTUnavailableError(
-                "faster-whisper is not installed. Run: "
-                "uv pip install faster-whisper"
-            ) from exc
-
-        try:
-            self._model = WhisperModel(
-                self.model_path,
-                device=self.device,
-                compute_type=self.compute_type,
-            )
-        except Exception as exc:
-            raise STTUnavailableError(
-                f"Cannot load Whisper model '{self.model_path}': {exc}"
-            ) from exc
-
-        return self._model
-
-    def is_available(self) -> tuple[bool, str]:
-        try:
-            self._load()
-        except STTUnavailableError as exc:
-            return False, str(exc)
-        except Exception as exc:
-            return False, f"Whisper unavailable: {exc}"
-
-        return True, (
-            f"faster-whisper model: {self.model_path}, "
-            f"device={self.device}, compute_type={self.compute_type}"
-        )
-
-    @staticmethod
-    def _pcm_to_wav(pcm: bytes, sample_rate: int) -> io.BytesIO:
-        wav_buffer = io.BytesIO()
-
-        with wave.open(wav_buffer, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(pcm)
-
-        wav_buffer.seek(0)
-        return wav_buffer
-
-    def transcribe(
-        self,
-        pcm: bytes,
-        sample_rate: int,
-    ) -> TranscriptionResult:
-        if not pcm:
-            return TranscriptionResult()
-
-        if sample_rate <= 0:
-            raise STTError("Invalid sample rate.")
-
-        try:
-            model = self._load()
-
-            wav_buffer = self._pcm_to_wav(pcm, sample_rate)
-
-            segments, info = model.transcribe(
-                wav_buffer,
-                language=self.language,
-                beam_size=5,
-                best_of=5,
-                temperature=0.0,
-                vad_filter=True,
-                condition_on_previous_text=False,
-            )
-
-            collected = []
-            probabilities = []
-            duration = 0.0
-
-            for segment in segments:
-                text = (segment.text or "").strip()
-
-                if text:
-                    collected.append(text)
-
-                probability = getattr(
-                    segment,
-                    "avg_logprob",
-                    None,
-                )
-
-                if isinstance(probability, (int, float)):
-                    # Convert Whisper's log probability into a rough
-                    # human-readable confidence value.
-                    import math
-
-                    confidence = math.exp(float(probability))
-                    confidence = max(0.0, min(1.0, confidence))
-                    probabilities.append(confidence)
-
-                end = getattr(segment, "end", None)
-                if isinstance(end, (int, float)):
-                    duration = max(duration, float(end))
-
-            text = " ".join(collected).strip()
-
-            confidence = (
-                sum(probabilities) / len(probabilities)
-                if probabilities
-                else None
-            )
-
-            if duration <= 0:
-                duration = len(pcm) / 2 / sample_rate
-
-            return TranscriptionResult(
-                text=text,
-                confidence=confidence,
-                duration_seconds=duration,
-            )
-
-        except STTUnavailableError:
-            raise
-        except Exception as exc:
-            raise STTError(f"Whisper transcription failed: {exc}") from exc
-
-
-class VoskSTT:
-    """Offline Vosk recognizer.
-
-    Kept as a fallback backend for compatibility with the original
-    Phase 4 implementation.
-    """
-
-    def __init__(self, model_path: str, language: str = "en-US") -> None:
-        self.model_path = Path(model_path).expanduser()
-        self.language = language
-        self._recognizer = None
-
-    def _load(self):  # type: ignore[no-untyped-def]
-        try:
-            from vosk import KaldiRecognizer, Model
-        except ImportError as exc:
-            raise STTUnavailableError(
-                "vosk is not installed. Install it with: "
-                "uv pip install vosk and download a model."
-            ) from exc
-
-        if not self.model_path.is_dir() or not any(
-            self.model_path.iterdir()
-        ):
-            raise STTUnavailableError(
-                f"Vosk model not found at '{self.model_path}'. "
-                f"Download {VOSK_MODEL_DOWNLOAD}, unzip it there, and retry."
-            )
-
-        try:
-            return KaldiRecognizer(
-                Model(str(self.model_path)),
-                16000,
-            )
-        except Exception as exc:
-            raise STTUnavailableError(
-                f"Cannot load Vosk model: {exc}"
-            ) from exc
-
-    def is_available(self) -> tuple[bool, str]:
-        try:
-            self._load()
-        except STTUnavailableError as exc:
-            return False, str(exc)
-
-        return True, f"vosk model: {self.model_path}"
-
-    def transcribe(
-        self,
-        pcm: bytes,
-        sample_rate: int,
-    ) -> TranscriptionResult:
-        if not pcm:
-            return TranscriptionResult()
-
-        try:
-            recognizer = self._load()
-
-            try:
-                recognizer.SetWords(True)
-            except Exception:
-                pass
-
-            block = max(1, sample_rate // 4)
-
-            for offset in range(0, len(pcm), block):
-                recognizer.AcceptWaveform(
-                    pcm[offset : offset + block]
-                )
-
-            final = json.loads(
-                recognizer.FinalResult() or "{}"
-            )
-
-        except STTUnavailableError:
-            raise
-        except Exception as exc:
-            raise STTError(
-                f"Vosk transcription failed: {exc}"
-            ) from exc
-
-        text = str(final.get("text") or "").strip()
-
-        words = final.get("result") or []
-
-        confs = [
-            word.get("conf")
-            for word in words
-            if isinstance(word.get("conf"), (int, float))
-        ]
-
-        confidence = (
-            sum(confs) / len(confs)
-            if confs
-            else None
-        )
-
-        return TranscriptionResult(
-            text=text,
-            confidence=confidence,
-            duration_seconds=(
-                len(pcm) / 2 / sample_rate
-                if sample_rate
-                else None
-            ),
-        )
 
 
 class ScriptedSTT:
@@ -324,3 +86,154 @@ class ScriptedSTT:
         return TranscriptionResult(
             text=self._transcripts.pop(0)
         )
+
+
+class NvidiaSTT:
+    """NVIDIA cloud speech-to-text (Parakeet via NVCF HTTPS, no local model).
+
+    Sends one WAV-encoded utterance per `transcribe()` call to the
+    verified `/v1/audio/transcriptions` endpoint and returns the
+    `{"text": ...}` transcript for the existing NEXUS assistant
+    (NVIDIA Nemotron) to answer. Failures raise STTError (session
+    continues); construction with missing credentials raises
+    STTUnavailableError (voice mode refuses to start with guidance).
+    Never falls back to local Whisper/Vosk.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "",
+        function_id: str = DEFAULT_STT_FUNCTION_ID,
+        language: str = "en-US",
+        timeout_seconds: float = 30.0,
+        http_client_factory=None,
+    ) -> None:
+        self._api_key = api_key or ""
+        fid = (function_id or DEFAULT_STT_FUNCTION_ID).strip()
+        self._function_id = fid
+        base = (base_url or "").strip().rstrip("/")
+        self._base_url = base or default_stt_base_url(fid)
+        self._language = (language or "en-US").strip() or "en-US"
+        self._timeout = max(1.0, float(timeout_seconds or 30.0))
+        self._client_factory = http_client_factory
+
+    def is_available(self) -> tuple[bool, str]:
+        if not self._api_key:
+            return False, (
+                "missing credentials: set NVIDIA_API_KEY in .env "
+                "(nvapi-... from build.nvidia.com; AI_API_KEY fallback "
+                "also empty). Use text mode (python run.py --text)."
+            )
+        return True, (
+            f"nvidia {DEFAULT_STT_MODEL} (cloud STT; {self._base_url})"
+        )
+
+    def _client(self):  # type: ignore[no-untyped-def]
+        if self._client_factory is not None:
+            return self._client_factory(timeout=self._timeout)
+        import httpx
+
+        return httpx.Client(timeout=self._timeout)
+
+    def transcribe(self, pcm: bytes, sample_rate: int) -> TranscriptionResult:
+        if not self._api_key:
+            raise STTError(
+                "Speech service credentials are missing: set "
+                "NVIDIA_API_KEY in .env (AI_API_KEY fallback also empty)."
+            )
+        if not pcm or len(pcm) < 2:
+            raise STTError("Empty audio captured; nothing to transcribe.")
+        if sample_rate <= 0:
+            raise STTError(f"Invalid sample rate ({sample_rate}).")
+        try:
+            wav_bytes = pcm_to_wav_bytes(pcm, sample_rate, channels=1)
+        except ValueError as exc:
+            raise STTError(str(exc)) from exc
+
+        url = f"{self._base_url}/v1/audio/transcriptions"
+        try:
+            with self._client() as client:
+                response = client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    files={"file": ("utterance.wav", wav_bytes, "audio/wav")},
+                    data={
+                        "language": self._language,
+                        "response_format": "json",
+                    },
+                )
+        except Exception as exc:
+            kind = type(exc).__name__
+            if "Timeout" in kind or "timeout" in kind.lower():
+                raise STTError(
+                    f"Speech service timed out after {self._timeout:g}s; "
+                    "check your network and try again."
+                ) from exc
+            raise STTError(
+                f"Speech service unreachable ({kind}); check your "
+                "network and try again."
+            ) from exc
+
+        status = getattr(response, "status_code", 0)
+        if status == 200:
+            try:
+                data = response.json()
+            except Exception:
+                # Some deployments return plain text on 200.
+                try:
+                    text = response.text or ""
+                except Exception:
+                    text = ""
+                return TranscriptionResult(text=text.strip())
+            if isinstance(data, dict):
+                text = data.get("text", "")
+                if isinstance(text, list):
+                    text = " ".join(str(p) for p in text)
+                return TranscriptionResult(text=str(text or "").strip())
+            raise STTError("Malformed speech service response.")
+        body = ""
+        try:
+            body = (response.text or "")[:300]
+        except Exception:
+            body = ""
+        # Keep diagnostics safe: status + short snippet, never the key.
+        if status in (401, 403):
+            raise STTError(
+                "Speech service authentication failed (HTTP "
+                f"{status}): check NVIDIA_API_KEY in .env."
+            )
+        if status == 429:
+            snippet = f" {body}" if body else ""
+            raise STTError(
+                f"Speech service rate-limited (HTTP 429).{snippet} "
+                "Wait and try again."
+            )
+        if status == 402:
+            raise STTError(
+                "Speech service quota/payment error (HTTP 402): "
+                "check your NVIDIA account."
+            )
+        if status == 400:
+            snippet = f" {body}" if body else ""
+            raise STTError(
+                f"Speech service rejected the audio (HTTP 400).{snippet}"
+            )
+        if 500 <= status < 600:
+            raise STTError(
+                f"Speech service upstream failure (HTTP {status}). "
+                "Try again shortly."
+            )
+        snippet = f" {body}" if body else ""
+        raise STTError(f"Speech service error (HTTP {status}).{snippet}")
+
+
+def require_no_local_stt() -> None:
+    """Guard: local AI speech backends must not exist in this module."""
+    import app.voice.stt as _mod
+
+    for name in ("WhisperSTT", "VoskSTT", "FasterWhisperSTT"):
+        if hasattr(_mod, name):
+            raise AssertionError(
+                f"local STT backend {name} must not exist (NVIDIA-only)"
+            )

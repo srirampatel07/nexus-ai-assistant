@@ -1,14 +1,14 @@
-"""Vision describers (Phase 5.0; local mode added later).
+"""Vision describers (NVIDIA-only: cloud inference, no local models).
 
 `VisionDescriber` turns upload-ready JPEG bytes into untrusted text.
 Two implementations:
 
 - `OpenRouterVisionDescriber`: OpenAI-compatible chat endpoint with the
-  separate `VISION_MODEL`, never `AI_MODEL`. Hosted mode reuses
-  `VISION_API_KEY` or `AI_API_KEY`; local mode (`vision_provider=local`)
-  sends no credential to its loopback endpoint. The regular chat model
-  (`AI_MODEL`) never receives images; vision requests always carry
-  `VISION_MODEL` explicitly.
+  separate `VISION_MODEL`, never `AI_MODEL`. NVIDIA cloud mode uses the
+  shared NVIDIA base URL + API key; generic hosted mode reuses
+  `VISION_API_KEY` or `AI_API_KEY`. The regular chat model (`AI_MODEL`)
+  never receives images; vision requests always carry `VISION_MODEL`
+  explicitly.
   Sends `content: [{type: text}, {type: image_url, url: data:...;base64}]`.
 - `MetadataDescriber`: offline fallback. No network, no cost, no upload —
   dimensions/format/size only, honestly labeled as metadata.
@@ -88,12 +88,13 @@ class MetadataDescriber:
 class OpenRouterVisionDescriber:
     """Vision model via an OpenAI-compatible chat endpoint (hosted or local).
 
-    Uses VISION_MODEL, never AI_MODEL. In hosted mode the key is
-    VISION_API_KEY or AI_API_KEY; in local mode (`vision_provider=local`)
-    the key stays empty and no `Authorization` header is sent. The class
-    itself is endpoint-agnostic — the factory guarantees local mode only
-    ever receives a loopback base URL, so images can never reach a hosted
-    service through it.
+    Uses the configured vision model, never AI_MODEL. In NVIDIA-only
+    operation it carries the NVIDIA cloud vision model
+    (meta/llama-3.2-11b-vision-instruct) on the shared NVIDIA base URL +
+    API key with the standard image_url content format; in generic hosted
+    mode the key is VISION_API_KEY or AI_API_KEY. The class itself is
+    endpoint-agnostic — the factory guarantees cloud mode never receives
+    a loopback base URL.
     """
 
     def __init__(
@@ -103,8 +104,9 @@ class OpenRouterVisionDescriber:
             raise ProviderAuthError("Vision base URL is not set.")
         if not model:
             raise ProviderAuthError("VISION_MODEL is not set.")
-        # Empty api_key is valid (local servers such as llama.cpp send no
-        # credential); _headers() omits the Authorization header then.
+        # An empty api_key omits the Authorization header (kept for the
+        # dev/echo transports); NVIDIA cloud vision always supplies a key
+        # (the factory raises when it is missing).
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._api_key = api_key

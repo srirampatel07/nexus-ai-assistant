@@ -1,6 +1,8 @@
 @echo off
-rem NEXUS one-click local AI launcher (Windows).
-rem Double-click this file: no manual venv activation, no manual servers.
+rem NEXUS one-click cloud AI launcher (Windows).
+rem Double-click this file: no manual venv activation, no local servers.
+rem Text + vision use the NVIDIA hosted API directly (no llama-server.exe,
+rem no ports 8080/8081, no GGUF files required).
 setlocal
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (

@@ -80,7 +80,8 @@ def test_capture_utterance_leading_silence_skipped(config):
     rec = FakeRecorder([_chunk(0)] * 3 + [_chunk(3000)] + [_chunk(0)] * 10)
     pcm = capture_utterance(rec, config)
     assert pcm is not None
-    assert len(pcm) < 14 * 3200  # leading silence dropped
+    # Leading silence dropped except ~0.3s pre-roll kept for soft onsets.
+    assert len(pcm) < 17 * 3200
 
 
 def test_capture_utterance_all_silence_returns_none(config, fast_wait):

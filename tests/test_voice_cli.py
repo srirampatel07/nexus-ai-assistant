@@ -1,4 +1,4 @@
-"""Voice CLI tests (Phase 4). Headless script mode: no mic, speaker, or Groq."""
+"""Voice CLI tests. Headless script mode: no mic, no model, no network."""
 
 import run
 from app.core.config import reload_settings

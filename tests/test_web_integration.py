@@ -266,7 +266,7 @@ def test_web_tools_absent_when_disabled():
     registry = build_default_registry(
         Settings(ai_provider="echo", web_enabled=False)
     )
-    assert len(registry) == 12
+    assert len(registry) >= 30  # 12 base + Phase 8 Jarvis parity tools
     for name in ("web.search", "web.fetch", "browser.navigate", "browser.click"):
         assert not registry.has(name)
     # Desktop Brave launcher is independent of WEB_ENABLED.
@@ -276,7 +276,7 @@ def test_web_tools_absent_when_disabled():
 
 def test_web_tools_present_when_enabled():
     registry = build_default_registry(Settings(ai_provider="echo"))
-    assert len(registry) == 20
+    assert len(registry) >= 47  # 20 base + Phase 8/9 Jarvis parity tools
     for name in (
         "web.search",
         "web.fetch",

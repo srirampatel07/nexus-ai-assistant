@@ -58,8 +58,12 @@ def test_factory_rejects_unknown():
         create_provider(Settings(ai_provider="nope"))
 
 
-def test_openai_provider_allows_empty_key_for_local_servers():
-    """Empty API keys are supported (local llama.cpp); Bearer is omitted."""
+def test_openai_provider_allows_empty_key_for_dev_transports():
+    """Empty API keys omit Bearer (dev/echo transports only).
+
+    The NVIDIA provider itself always requires a key and refuses to
+    construct without one; this tolerance lives in the shared transport.
+    """
     provider = OpenAICompatibleProvider(
         base_url="https://example.com/v1", model="m", api_key=""
     )

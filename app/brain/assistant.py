@@ -15,18 +15,20 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
-from collections.abc import Callable
 from datetime import datetime
 
 from app.brain.planner import PlanAction, Planner
 from app.brain.prompts import build_system_prompt
 from app.brain.provider import AIProvider, ChatMessage
 from app.brain.router import ToolRouter
+from app.brain.tasks import TaskTracker
 from app.core.config import Settings
 from app.core.events import EventType, NexusEvent, event_bus
 from app.core.exceptions import MemoryRejected, ProviderError
 from app.core.logger import get_logger
+from app.security.audit import sanitize
 from app.memory.manager import MemoryManager
 from app.memory.redaction import evaluate as evaluate_for_secrets
 from app.security.confirmation import ConfirmCallback
@@ -48,6 +50,10 @@ HELP_TEXT = (
     "search the web, and open pages in your Brave browser (with approval). "
     "I also remember things you ask me to (except secrets, which I never keep). "
     "I can also describe a local image file you point me to with /vision. "
+    "Phase 8 Jarvis parity: /screen captures the desktop, screen.point shows "
+    "a Show-Me circle, git/docker tools inspect repos and containers, "
+    "reminders.* and routines.* schedule tasks, connectors.status + github.* "
+    "link apps, image.generate creates pictures, /persona + /tone change voice. "
     "Try 'what time is it', 'who are you', or 'status'. "
     "Type /help for commands, /tools to list tools, /exit to quit."
 )
@@ -89,14 +95,9 @@ class NexusAssistant:
         conversation_id: str | None = None,
         memory: MemoryManager | None = None,
         vision_describer: object | None = None,
-        synthesis_handoff: Callable[[], tuple[bool, str]] | None = None,
     ) -> None:
         self.settings = settings
         self.provider = provider
-        # Optional one-shot vision -> text model switch (launcher-owned).
-        # Called at most once per achat_with_image() when the text brain
-        # is down; None preserves the standalone direct-report fallback.
-        self.synthesis_handoff = synthesis_handoff
         self.planner = planner or Planner()
         self.router = router or ToolRouter()
         self.executor = executor
@@ -105,11 +106,23 @@ class NexusAssistant:
             self.system_prompt = system_prompt
         else:
             tools = self.registry.tool_definitions() if self.registry else []
-            self.system_prompt = build_system_prompt(tools=tools)
+            self.system_prompt = build_system_prompt(
+                tools=tools,
+                persona=str(getattr(settings, "nexus_persona", "assistant")),
+                tone=str(getattr(settings, "nexus_tone", "calm")),
+            )
         self.conversation_id = conversation_id or uuid.uuid4().hex[:12]
         self.memory = memory
         self.vision_describer = vision_describer
         self._history: list[ChatMessage] = []
+        try:
+            from app.brain.budget import BudgetGuard
+            self.budget = BudgetGuard(
+                max_session_tokens=int(getattr(settings, "nexus_session_token_cap", 100000)),
+                max_reply_tokens=int(getattr(settings, "nexus_reply_token_cap", 20000)),
+            )
+        except Exception:
+            self.budget = None
 
     @property
     def tools_enabled(self) -> bool:
@@ -392,11 +405,11 @@ class NexusAssistant:
 
         # Text-brain outage bypass: a good vision report must not be
         # discarded just because the synthesis call cannot run. When the
-        # text provider is unreachable, show the vision description
+        # NVIDIA text provider is unreachable, show the vision description
         # directly (it already answers "what do you see?"); otherwise keep
-        # the normal augmented synthesis path unchanged. With a launcher
-        # handoff configured, try ONCE to bring the text model up first
-        # (sequential vision -> text switch, one model at a time).
+        # the normal augmented synthesis path unchanged. There is no local
+        # model switch: NVIDIA failures are reported honestly, never
+        # routed to another provider.
         synthesis_on = bool(
             getattr(self.settings, "vision_text_synthesis", True)
         )
@@ -424,34 +437,12 @@ class NexusAssistant:
         except Exception as exc:  # health must never break vision
             log.debug("text health check failed: %s", exc)
             text_online = False
-        handoff_detail = ""
-        if synthesis_on and not text_online and self.synthesis_handoff is not None:
-            try:
-                # Blocking process management runs off the event loop.
-                handoff_ok, handoff_detail = await asyncio.to_thread(
-                    self.synthesis_handoff
-                )
-            except Exception as exc:  # a broken hook must not kill vision
-                log.warning("synthesis handoff failed: %s", exc)
-                handoff_ok, handoff_detail = False, str(exc)
-            if handoff_ok:
-                try:
-                    text_online = await self.provider.health_check()
-                except Exception as exc:
-                    log.debug("post-handoff health check failed: %s", exc)
-                    text_online = False
         if not text_online:
             log.warning("text brain offline; returning vision report directly")
-            notice = (
+            reply = (
                 "My text brain is offline, so here is the vision model's "
                 f"description of {basename} directly:\n\n{description}"
             )
-            if handoff_detail:
-                notice += (
-                    "\n\n(Text synthesis was attempted but unavailable: "
-                    f"{handoff_detail})"
-                )
-            reply = notice
         else:
             augmented = (
                 f"{question}\n\nA vision model has already analyzed the attached "
@@ -502,33 +493,127 @@ class NexusAssistant:
         log.warning("provider failed: %s", exc)
         return PROVIDER_ERROR_REPLY
 
+    @staticmethod
+    def _dedup_key(call) -> str:  # type: ignore[no-untyped-def]
+        """Stable identity for one requested tool call: name + arguments.
+
+        The provider-assigned id is deliberately excluded: a retried
+        request carries a fresh id for identical work, and re-executing it
+        would repeat side effects. Parallel calls in one turn still all
+        run unless they are exactly identical (same name and arguments).
+        The ledger is per user request, so later messages are unaffected.
+        """
+        try:
+            args_json = json.dumps(call.arguments or {}, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            args_json = str(call.arguments)
+        return f"{call.name}::{args_json}"
+
+    @staticmethod
+    def _tool_result_payload(result, max_chars: int) -> dict:  # type: ignore[no-untyped-def]
+        """Serialize a tool result for model context, truncated with marker."""
+        try:
+            output_json = json.dumps(result.output, default=str)
+        except (TypeError, ValueError):
+            output_json = str(result.output)
+        truncated = False
+        if max_chars > 0 and len(output_json) > max_chars:
+            output_json = output_json[:max_chars]
+            truncated = True
+        payload = {
+            "ok": result.ok,
+            "output": output_json,
+            "error": result.error,
+        }
+        if truncated:
+            payload["truncated"] = (
+                f"output cut at {max_chars} chars; "
+                "answer from what is shown, do not re-run the same call "
+                "to see more."
+            )
+        return payload
+
     async def _achat_with_tools(
         self, user_text: str, confirm: ConfirmCallback | None
     ) -> str:
         """Agentic loop: model -> tool calls -> executor -> model -> answer.
 
         `max_tool_iterations` bounds model turns that may request tools;
-        one turn can carry several tool calls and all of them run. Once the
-        budget is exhausted no further tools may run — but if tool evidence
+        `tool_loop_timeout_seconds` bounds overall wall-clock time (the
+        first turn always runs). One turn can carry several tool calls and
+        all of them run — unless an identical call already executed in this
+        request, in which case the cached result is reused instead of
+        re-executing (no duplicate side effects on retry). Once the budget
+        is exhausted no further tools may run — but if tool evidence
         was gathered, the model gets one final tool-free turn to compose
         the user-facing answer from it instead of discarding everything.
+        Tool results are truncated to `tool_result_max_chars` so one huge
+        output cannot blow up model context. A TaskTracker records each
+        step; later turns see a compact progress note, and budget
+        exhaustion summarizes completed work plus blockers.
         """
         assert self.registry is not None and self.executor is not None
         llm_tools = self.registry.tool_definitions()
+        # Jarvis institute parity: smart tool pre-filter saves context.
+        try:
+            if bool(getattr(self.settings, "smart_tools_enabled", True)):
+                from app.brain.budget import select_relevant_tools
+                names = [t.name for t in llm_tools]
+                keep = set(select_relevant_tools(
+                    names, user_text,
+                    max_tools=int(getattr(self.settings, "smart_tools_max", 12)),
+                    descriptions={t.name: t.description for t in llm_tools}))
+                filtered = [t for t in llm_tools if t.name in keep]
+                if filtered:
+                    llm_tools = filtered
+        except Exception:
+            pass
         max_iters = max(1, self.settings.max_tool_iterations)
+        result_cap = max(0, self.settings.tool_result_max_chars)
+        timeout = max(0.0, self.settings.tool_loop_timeout_seconds)
+        deadline = time.monotonic() + timeout if timeout > 0 else None
         working = self._context_messages(user_text)
+        tracker = TaskTracker(goal=user_text.strip()[:200])
+        seen_calls: dict[str, object] = {}
         last_text = ""
         tool_calls_made = 0
-        for _ in range(max_iters):
+        try:
+            if self.budget is not None:
+                self.budget.start_reply()
+                self.budget.charge(user_text)
+                if self.budget.session_over():
+                    return ("Session budget exceeded. Start a new conversation "
+                            "or raise NEXUS_SESSION_TOKEN_CAP.")
+        except Exception:
+            pass
+        for turn in range(max_iters):
+            if deadline is not None and turn > 0 and time.monotonic() >= deadline:
+                log.warning("tool loop hit time budget")
+                break
+            note = tracker.progress_note()
+            turn_messages = (
+                working + [ChatMessage(role="system", content=note)]
+                if note
+                else working
+            )
             try:
                 response = await self.provider.send_message_with_tools(
-                    working, llm_tools
+                    turn_messages, llm_tools
                 )
             except ProviderError as exc:
                 return self._provider_error_reply(exc)
             last_text = response.content or last_text
             if not response.tool_calls:
-                return response.content
+                # Model's final answer (or an empty turn). Never return a
+                # blank reply when earlier turns produced text.
+                if (response.content or "").strip():
+                    return response.content
+                if last_text.strip():
+                    return last_text
+                return (
+                    "I couldn't compose an answer to that request. "
+                    "Please try a more specific request."
+                )
             working.append(
                 ChatMessage(
                     role="assistant",
@@ -537,16 +622,56 @@ class NexusAssistant:
                 )
             )
             for call in response.tool_calls:
+                key = self._dedup_key(call)
+                if key in seen_calls:
+                    cached = seen_calls[key]
+                    log.debug(
+                        "tool call %s (%s) repeated: reusing cached result",
+                        call.id or call.name,
+                        call.name,
+                    )
+                    tracker.record(call.name, cached.ok, reused=True)  # type: ignore[union-attr]
+                    working.append(
+                        ChatMessage(
+                            role="tool",
+                            tool_call_id=call.id or call.name,
+                            content=json.dumps(
+                                {
+                                    **self._tool_result_payload(cached, result_cap),  # type: ignore[arg-type]
+                                    "reused": (
+                                        "identical call already executed "
+                                        "above; not re-run."
+                                    ),
+                                },
+                                default=str,
+                            ),
+                        )
+                    )
+                    continue
                 event_bus.publish(
                     NexusEvent(
                         type=EventType.TOOL_STARTED,
-                        payload={"tool": call.name, "arguments": call.arguments},
+                        payload={
+                            "tool": call.name,
+                            "arguments": sanitize(call.arguments),
+                        },
                     )
                 )
                 result = await self.executor.execute(
                     call.name, call.arguments, confirm=confirm
                 )
+                seen_calls[key] = result
                 tool_calls_made += 1
+                tracker.record(call.name, result.ok)
+                try:
+                    if self.budget is not None:
+                        self.budget.charge(json.dumps(call.arguments or {}, default=str)[:4000])
+                        self.budget.charge((result.error or "")[:2000])
+                        if self.budget.reply_over() or self.budget.session_over():
+                            log.warning("tool loop hit token budget")
+                            break
+                except Exception:
+                    pass
                 event_bus.publish(
                     NexusEvent(
                         type=(
@@ -562,11 +687,7 @@ class NexusAssistant:
                         role="tool",
                         tool_call_id=call.id or call.name,
                         content=json.dumps(
-                            {
-                                "ok": result.ok,
-                                "output": result.output,
-                                "error": result.error,
-                            },
+                            self._tool_result_payload(result, result_cap),
                             default=str,
                         ),
                     )
@@ -596,6 +717,7 @@ class NexusAssistant:
         return last_text or (
             f"I gathered information from {tool_calls_made} tool call(s) "
             "but couldn't compose a final answer from it. "
+            f"{tracker.summary()} "
             "Please try a more specific request."
         )
 

@@ -1,14 +1,18 @@
-"""Interactive one-click menu for NEXUS (Windows console).
+"""Cloud-only one-click launcher for NEXUS (Windows console).
 
 Double-click Start-NEXUS.bat (or `python app/launcher/menu.py`) and pick:
 
-    [1] Text Mode — Qwen3-8B      (ensures :8080, then existing text UI)
-    [2] Vision Mode — Qwen2.5-VL-3B (ensures :8081, then text UI + /vision)
-    [3] Health Check              (structured status, no changes made)
-    [4] Exit                      (stops launcher-owned servers only)
+    [1] Start NEXUS (NVIDIA cloud)  (no local servers, direct to hosted API)
+    [2] Health Check                (structured status, no changes made)
+    [3] Exit
 
-The menu loops until Exit; leaving a mode returns here. Ctrl+C exits
-gracefully. All assistant behavior comes from run.py — nothing duplicated.
+NVIDIA-only operation: text uses nvidia/nemotron-3.5-lightning-30b-a3b and
+vision uses meta/llama-3.2-11b-vision-instruct through
+https://integrate.api.nvidia.com/v1. No llama-server.exe is started, ports
+:8080/:8081 are never used (closed ports are healthy), and no GGUF model
+or projector file is required. The menu loops until Exit; leaving NEXUS
+returns here. Ctrl+C exits gracefully. All assistant behavior comes from
+run.py — nothing duplicated. Nothing here kills any process.
 """
 
 from __future__ import annotations
@@ -20,122 +24,104 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.core.config import get_settings  # noqa: E402
-from app.launcher import servers as S  # noqa: E402
 
 MENU = """\
-NEXUS — LOCAL AI ASSISTANT
+NEXUS — CLOUD AI ASSISTANT (NVIDIA)
 
-[1] Text Mode — Qwen3-8B
-[2] Vision Mode — Qwen2.5-VL-3B
-[3] Health Check
-[4] Exit
+[1] Start NEXUS (NVIDIA cloud)
+[2] Health Check
+[3] Exit
 
 Select an option: """
 
 
-def _owned_running() -> list[str]:
-    running = []
-    for name, port in (("text", S.TEXT_PORT), ("vision", S.VISION_PORT)):
-        if S._owns_process(name, port, S.real_list_llama_processes) is not None:
-            running.append(f"{name} (:{port})")
-    return running
+def run_cloud(assistant=None) -> None:  # type: ignore[no-untyped-def]
+    """Start the NEXUS text UI on NVIDIA cloud (no local servers).
 
-
-def ensure_mode(mode: str) -> bool:
-    """Stop the other owned server, ensure this one. True when ready."""
-    other = "vision" if mode == "text" else "text"
-    other_port = S.VISION_PORT if other == "vision" else S.TEXT_PORT
-    stopped = S.stop_server(other, other_port)
-    if not stopped.ok:
-        print(f"WARNING: {stopped.detail}")
-    elif "Stopped" in stopped.detail:
-        print(stopped.detail)
-    try:
-        files = S.discover_model_files()
-    except FileNotFoundError as exc:
-        print(f"ERROR: {exc}")
-        return False
-    settings = get_settings()
-    if mode == "text":
-        expected = [m for m in (settings.ai_model,) if m]
-        if files["text"] not in expected:
-            expected.append(files["text"])
-        spec = S.text_spec(files["text"], expected)
-    else:
-        expected = [m for m in (settings.vision_model, S.VISION_ALIAS,
-                                files["vision"]) if m]
-        spec = S.vision_spec(files["vision"], files["mmproj"], expected)
-    result = S.ensure_server(spec)
-    print(result.detail)
-    if not result.ok:
-        return False
-    if mode == "vision":
-        print("In text mode, use: /vision <image-path> [question]")
-    return True
-
-
-def run_text_ui(mode: str = "text") -> None:
-    """Run the existing interactive text UI, with the vision -> text
-    handoff attached in vision mode (plain text mode is untouched)."""
+    `assistant` is injectable for tests; None builds the standard cloud
+    assistant with no local-model handoff attached.
+    """
     from run import cmd_text
 
-    assistant = None
-    if mode == "vision":
-        from app.launcher.handoff import make_text_handoff
+    if assistant is None:
         from app.main import build_assistant
 
-        settings = get_settings()
-        assistant = build_assistant(
-            settings, synthesis_handoff=make_text_handoff(settings)
-        )
+        assistant = build_assistant(get_settings())
     try:
         cmd_text(assistant=assistant)
     except (KeyboardInterrupt, EOFError):
-        print("\nLeaving text mode.")
+        print("\nLeaving NEXUS.")
 
 
 def collect_health() -> list[tuple[str, str, str]]:
-    """Structured health rows: (label, state, detail). Read-only."""
+    """Structured health rows: (label, state, detail). Read-only.
+
+    Cloud-only: verifies NVIDIA text/vision configuration without printing
+    secrets and without consuming API quota (no network calls, no image
+    uploads). Closed local ports are healthy — local servers are never
+    used. Never marks NEXUS unhealthy merely because :8080/:8081 are down.
+    """
     rows: list[tuple[str, str, str]] = []
-    root = S.project_root()
+    root = Path(__file__).resolve().parents[2]
     venv_python = root / ".venv" / "Scripts" / "python.exe"
     rows.append(("Python", "OK" if os.path.isfile(sys.executable) else "FAIL",
                  sys.version.split()[0]))
     rows.append(("Virtualenv", "OK" if venv_python.is_file() else "FAIL",
                  str(venv_python) if venv_python.is_file()
                  else "missing .venv"))
-    try:
-        exe = S.find_llama_server()
-        rows.append(("llama-server", "OK", exe))
-    except FileNotFoundError as exc:
-        rows.append(("llama-server", "FAIL", str(exc)))
-    try:
-        files = S.discover_model_files()
-        rows.append(("Text model file", "OK", files["text"]))
-        rows.append(("Vision model file", "OK", files["vision"]))
-        rows.append(("Vision projector", "OK", files["mmproj"]))
-    except FileNotFoundError as exc:
-        rows.append(("Model files", "FAIL", str(exc)))
     settings = get_settings()
-    for label, port, want in (
-        ("Text endpoint :8080", S.TEXT_PORT, [settings.ai_model]),
-        ("Vision endpoint :8081", S.VISION_PORT,
-         [settings.vision_model, S.VISION_ALIAS]),
-    ):
-        listing = S.real_http_models(f"http://127.0.0.1:{port}/v1", 5.0)
-        if not listing.ok:
-            state = "DOWN"
-            if S.port_busy(port):
-                detail = f"port busy but API unreachable ({listing.detail})"
-            else:
-                detail = f"not running ({listing.detail})"
-        elif S.models_match(listing.model_id, listing.aliases, want):
-            state = "HEALTHY"
-            detail = f"serving {listing.model_id}"
+    from app.brain.provider import (
+        NVIDIA_DEFAULT_BASE_URL,
+        NVIDIA_DEFAULT_MODEL,
+        NVIDIA_DEFAULT_VISION_MODEL,
+        nvidia_vision_stale_override,
+        resolve_nvidia_settings,
+        resolve_nvidia_vision_settings,
+    )
+
+    try:
+        base_url, model, api_key = resolve_nvidia_settings(settings)
+    except Exception as exc:  # never break health on resolve errors
+        rows.append(("NVIDIA text", "WARN", str(exc)))
+    else:
+        if not model:
+            model = NVIDIA_DEFAULT_MODEL
+        if not base_url:
+            base_url = NVIDIA_DEFAULT_BASE_URL
+        if api_key:
+            rows.append(("NVIDIA text", "CONFIGURED",
+                         f"model={model} endpoint={base_url} "
+                         "(key set, use run.py --health for live check)"))
         else:
-            state = "WARN"
-            detail = f"serving unexpected model {listing.model_id}"
-        rows.append((label, state, detail))
+            rows.append(("NVIDIA text", "MISSING",
+                         "set NVIDIA_API_KEY in .env "
+                         "(AI_API_KEY fallback also empty)"))
+    if not bool(getattr(settings, "vision_enabled", True)):
+        rows.append(("NVIDIA vision", "OFF", "VISION_ENABLED=false"))
+    else:
+        try:
+            v_base, v_model, v_key = resolve_nvidia_vision_settings(settings)
+        except Exception as exc:
+            rows.append(("NVIDIA vision", "WARN", str(exc)))
+        else:
+            if not v_model:
+                v_model = NVIDIA_DEFAULT_VISION_MODEL
+            if not v_base:
+                v_base = NVIDIA_DEFAULT_BASE_URL
+            if v_key:
+                detail = (f"model={v_model} endpoint={v_base} "
+                          "(key set, no image uploaded by health check)")
+                stale = nvidia_vision_stale_override(settings)
+                if stale:
+                    detail += (f" [note: stale override {stale!r} retired "
+                               "2026-08-26, ignored — remove it from .env]")
+                rows.append(("NVIDIA vision", "CONFIGURED", detail))
+            else:
+                rows.append(("NVIDIA vision", "MISSING",
+                             "set NVIDIA_API_KEY in .env "
+                             "(VISION_API_KEY fallback also empty)"))
+    rows.append(("Local servers", "NOT USED",
+                 "cloud-only: :8080/:8081 never started, closed ports are healthy"))
     db = Path(settings.memory_database_path)
     if not db.is_absolute():
         db = root / db
@@ -146,23 +132,9 @@ def collect_health() -> list[tuple[str, str, str]]:
     rows.append(("Voice", "CONFIGURED" if settings.voice_enabled else "OFF",
                  f"stt={settings.voice_stt_backend} tts={settings.voice_tts_backend}"))
     rows.append(("Vision", "CONFIGURED" if settings.vision_enabled else "OFF",
-                 f"provider={settings.vision_provider} model={settings.vision_model}"))
+                 f"provider={settings.vision_provider}"))
     rows.append(("Web", "CONFIGURED" if settings.web_enabled else "OFF",
                  f"provider={settings.web_search_provider}"))
-    try:
-        free_gb = S.real_ram_free_gb()
-        rows.append(("RAM free",
-                     "OK" if free_gb >= S.MIN_FREE_GB else "WARN",
-                     f"{free_gb:.1f} GB (need {S.MIN_FREE_GB} GB per model)"))
-    except Exception as exc:
-        rows.append(("RAM free", "WARN", str(exc)))
-    for label, port in (("Port :8080", S.TEXT_PORT), ("Port :8081", S.VISION_PORT)):
-        try:
-            pid = S.real_netstat_owner(port)
-        except Exception:
-            pid = None
-        rows.append((label, "BUSY" if pid else "FREE",
-                     f"PID {pid}" if pid else "available"))
     return rows
 
 
@@ -173,36 +145,23 @@ def show_health() -> None:
     print()
 
 
-def stop_owned() -> None:
-    for name, port in (("text", S.TEXT_PORT), ("vision", S.VISION_PORT)):
-        result = S.stop_server(name, port)
-        if "Stopped" in result.detail:
-            print(result.detail)
-
-
 def main() -> int:
-    print("NEXUS launcher — one model at a time (16 GB laptop).")
+    print("NEXUS launcher — NVIDIA cloud (no local models).")
     while True:
         try:
             choice = input(MENU).strip()
         except (KeyboardInterrupt, EOFError):
             print("\nGoodbye.")
-            stop_owned()
             return 0
         if choice == "1":
-            if ensure_mode("text"):
-                run_text_ui("text")
+            run_cloud()
         elif choice == "2":
-            if ensure_mode("vision"):
-                run_text_ui("vision")
-        elif choice == "3":
             show_health()
-        elif choice == "4":
+        elif choice == "3":
             print("Goodbye.")
-            stop_owned()
             return 0
         else:
-            print("Please choose 1, 2, 3, or 4.")
+            print("Please choose 1, 2, or 3.")
     return 0
 
 
