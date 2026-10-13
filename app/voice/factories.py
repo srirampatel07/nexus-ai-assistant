@@ -107,11 +107,16 @@ def resolve_nvidia_tts_settings(
 
 
 def create_audio_config(settings: Settings) -> AudioConfig:
+    try:
+        interrupt_threshold = float(settings.voice_interrupt_rms_threshold)
+    except (TypeError, ValueError, AttributeError):
+        interrupt_threshold = 500.0
     return AudioConfig(
         sample_rate=settings.voice_sample_rate,
         channels=settings.voice_channels,
         silence_timeout_seconds=settings.voice_silence_timeout_seconds,
         max_utterance_seconds=settings.voice_max_utterance_seconds,
+        interrupt_rms_threshold=interrupt_threshold,
     )
 
 

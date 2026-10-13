@@ -17,8 +17,10 @@ models. Scripted/headless mode stays strictly sequential.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
+import time
 
 from app.brain.assistant import NexusAssistant
 from app.core.logger import get_logger
@@ -38,6 +40,10 @@ log = get_logger("nexus.voice")
 # speech is treated as a new question so corrections are never swallowed).
 _PAUSE_WORDS = ("wait", "hold on", "pause", "stop", "quiet")
 _RESUME_WORDS = ("continue", "resume", "go on", "carry on", "keep going")
+# Common Parakeet mishearings of a clipped "wait", accepted ONLY in 1-2
+# word utterances while speaking (a bare "he" in normal conversation must
+# never stop playback). Keep this list in this one place.
+_STOP_NEAR_MATCHES = ("wait", "right", "he", "weight", "white", "stop", "pause")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?\n])\s+")
 
 
@@ -73,6 +79,11 @@ def match_interruption_control(text: str) -> str | None:
     normalized = " ".join((text or "").strip().lower().split())
     if not normalized or len(normalized.split()) > 6:
         return None
+    words = normalized.split()
+    if len(words) <= 2:
+        for word in _STOP_NEAR_MATCHES:
+            if re.search(rf"(?<!\w){re.escape(word)}(?!\w)", normalized):
+                return "pause"
     for word in _PAUSE_WORDS:
         if word in normalized and re.search(rf"(?<!\w){re.escape(word)}(?!\w)", normalized):
             return "pause"
@@ -204,6 +215,50 @@ class VoiceSession:
             pass
         self._join_playback()
 
+    def _interrupt_stop(self) -> None:
+        """Callback: sustained mic speech started — stop TTS at once.
+
+        Runs inside microphone capture, before transcription finishes, so
+        "wait" halts speech in fractions of a second. The transcript later
+        decides pause/resume/new-question; never raises.
+        """
+        try:
+            self._stop_playback()
+        except Exception:
+            pass
+
+    def _save_interrupt_diagnostic(self, pcm: bytes) -> None:
+        """Save one interrupted chunk to the OS temp dir for diagnosis.
+
+        Logs only byte length, duration, and RMS loudness — never the
+        transcript or credentials. Temp files live outside the repo and are
+        never committed. Never raises.
+        """
+        try:
+            import tempfile
+            import wave as _wave
+            from app.voice.audio import chunk_rms
+
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            path = os.path.join(
+                tempfile.gettempdir(), f"nexus-interrupt-{stamp}.wav"
+            )
+            with _wave.open(path, "wb") as wf:
+                wf.setnchannels(self.config.channels)
+                wf.setsampwidth(2)
+                wf.setframerate(self.config.sample_rate)
+                wf.writeframes(pcm)
+            seconds = len(pcm) / 2 / max(1, self.config.sample_rate)
+            log.info(
+                "interrupt audio saved: %s (%d bytes, %.2fs, rms=%.0f)",
+                path,
+                len(pcm),
+                seconds,
+                chunk_rms(pcm),
+            )
+        except Exception as exc:
+            log.warning("interrupt diagnostic failed: %s", exc)
+
     def _transcribe_pcm(self, pcm: bytes) -> str | None:
         """Transcribe captured audio; None on cancel, "" on skip/empty."""
         try:
@@ -247,8 +302,14 @@ class VoiceSession:
             interrupted_pcm: bytes | None = None
             while thread.is_alive():
                 try:
+                    # Stop TTS the moment sustained speech starts (via the
+                    # callback), then keep capturing the full utterance for
+                    # the pause/resume/new-question decision below.
                     pcm = capture_utterance(
-                        self.recorder, self.config, self._cancel
+                        self.recorder,
+                        self.config,
+                        self._cancel,
+                        on_speech_start=self._interrupt_stop,
                     )
                 except MicrophoneUnavailableError:
                     raise
@@ -262,8 +323,10 @@ class VoiceSession:
                 thread.join(timeout=5.0)
                 self._playback_thread = None
                 return "done", None
-            # Speech while speaking: stop audio first, decide afterwards.
+            # Speech while speaking: audio already stopped via the
+            # sustained-speech callback; diagnose the chunk, then decide.
             self._stop_playback()
+            self._save_interrupt_diagnostic(interrupted_pcm)
             done_count = int(played.get("count", 0))
             remaining = remaining[done_count:]
             text = self._transcribe_pcm(interrupted_pcm)

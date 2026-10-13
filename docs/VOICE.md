@@ -99,11 +99,19 @@ Live microphone mode (English only) listens while a reply is playing, using
 the same already-open microphone stream — playback uses the speaker device,
 so there are no competing microphone consumers:
 
-- Say **“wait”** (also “hold on”, “pause”, “stop”, “quiet”) to stop playback
-  promptly and pause. Say **“continue”** (also “resume”, “go on”) to hear
-  the remaining sentences. Only short utterances (at most 6 words) count as
-  controls; a longer sentence containing “wait” is answered as a new
+- Speech stops **as soon as sustained loud mic input is detected** (a
+  couple of consecutive loud 0.1s chunks), before transcription finishes.
+  The transcript then decides: **“wait”** (also “hold on”, “pause”,
+  “stop”, “quiet”) pauses; **“continue”** (also “resume”, “go on”)
+  resumes the remaining sentences.
+- A clipped “wait” is often misheard (e.g. “He”): in **1–2 word**
+  utterances only, the near-matches “wait”, “right”, “he”, “weight”,
+  “white”, “stop”, “pause” all count as stop (one list in
+  `app/voice/session.py`). Only short utterances (at most 6 words) count
+  as controls; a longer sentence containing “wait” is answered as a new
   question, so corrections are never swallowed.
+- Capture keeps ~0.3s of pre-threshold audio so soft word onsets (the /w/
+  in “wait”) are not clipped.
 - Asking a new question mid-answer stops the old reply and answers the new
   turn immediately. An undecipherable interruption (silence, noise, STT
   error) resumes the remaining reply instead of punishing the user.
@@ -113,8 +121,15 @@ so there are no competing microphone consumers:
   on word boundaries to respect the 2000-character Magpie request limit).
   `--script` headless mode stays strictly sequential.
 - Echo handling is energy-based only (no neural model, no echo canceller):
-  silence never triggers anything, and only loud sustained speech is even
-  transcribed. Headphones or lower speaker volume reduce self-triggering.
+  silence never triggers anything. **Speakers:** NEXUS's own voice can
+  trip the gate — even then, its transcript won't match the stop list, so
+  playback resumes; but if false stops annoy you, raise
+  `VOICE_INTERRUPT_RMS_THRESHOLD` or use a headset. A headset avoids the
+  problem entirely.
+- Diagnosis: each interruption saves that one captured chunk to the OS
+  temp folder (`nexus-interrupt-<timestamp>.wav`, never committed) and
+  logs only byte length, duration, and RMS loudness — never the transcript
+  or credentials — so you can hear exactly what Parakeet received.
 
 ## Configuration (.env)
 
@@ -124,6 +139,8 @@ so there are no competing microphone consumers:
 `null` = silent), `VOICE_SAMPLE_RATE` (16000), `VOICE_CHANNELS` (1),
 `VOICE_SILENCE_TIMEOUT_SECONDS` (1.2), `VOICE_MAX_UTTERANCE_SECONDS` (15),
 `VOICE_TTS_RATE` (175), `VOICE_TTS_VOLUME` (1.0), `VOICE_STOP_PHRASES`,
+`VOICE_INTERRUPT_RMS_THRESHOLD` (500.0; raise if speakers falsely
+interrupt, headset works at default),
 `VOICE_STT_LANGUAGE` (en-US), `VOICE_STT_TIMEOUT_SECONDS` (30),
 `NVIDIA_STT_FUNCTION_ID`, `NVIDIA_STT_BASE_URL` (empty = derived),
 `VOICE_TTS_LANGUAGE` (en-US), `VOICE_TTS_VOICE`

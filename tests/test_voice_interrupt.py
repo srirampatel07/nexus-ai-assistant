@@ -110,7 +110,7 @@ def scripted_capture(monkeypatch):
     calls = {"n": 0}
     queue: list = []
 
-    def fake(recorder, config, cancel=None):
+    def fake(recorder, config, cancel=None, **kwargs):
         calls["n"] += 1
         if queue:
             return queue.pop(0)
@@ -347,3 +347,150 @@ def test_sapi_stop_interrupts_blocking_playback():
     assert done.wait(timeout=5.0), "stop() did not interrupt playback"
     thread.join(timeout=5.0)
     assert not thread.is_alive()
+
+
+# -- pre-roll, sustained-stop callback, near-matches, diagnostics ----------------
+
+import app.voice.audio as audio_mod
+from app.voice.audio import chunk_rms
+
+
+def _chunk(amplitude: int, frames: int = 1600) -> bytes:
+    return struct.pack(f"<{frames}h", *([amplitude] * frames))
+
+
+class ScriptedRecorder:
+    """Chunk-scripted recorder for capture-level tests."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.opened = False
+        self.closed = False
+
+    def open(self):
+        self.opened = True
+
+    def read_chunk(self):
+        if self._chunks:
+            return self._chunks.pop(0)
+        time.sleep(0.005)
+        return _chunk(0)
+
+    def close(self):
+        self.closed = True
+
+
+def _fast_config(**over):
+    args = dict(silence_timeout_seconds=0.05, max_utterance_seconds=2.0)
+    args.update(over)
+    return AudioConfig(**args)
+
+
+def test_pre_roll_keeps_soft_onset(monkeypatch):
+    monkeypatch.setattr(audio_mod, "MAX_WAIT_FOR_SPEECH_SECONDS", 2.0)
+    # Two silent chunks, then a loud word: capture must include pre audio.
+    rec = ScriptedRecorder([_chunk(0), _chunk(0)] + [_chunk(3000)] * 4 + [_chunk(0)] * 10)
+    pcm = audio_mod.capture_utterance(rec, _fast_config())
+    assert pcm is not None
+    assert len(pcm) > 4 * 3200  # word chunks plus pre-roll context
+
+
+def test_speech_start_callback_fires_once_on_sustained_speech(monkeypatch):
+    monkeypatch.setattr(audio_mod, "MAX_WAIT_FOR_SPEECH_SECONDS", 2.0)
+    fired: list[str] = []
+    rec = ScriptedRecorder([_chunk(3000)] * 4 + [_chunk(0)] * 10)
+    pcm = audio_mod.capture_utterance(
+        rec, _fast_config(), on_speech_start=lambda: fired.append("stop")
+    )
+    assert pcm is not None
+    assert fired == ["stop"]
+
+
+def test_speech_start_callback_ignores_single_blip(monkeypatch):
+    monkeypatch.setattr(audio_mod, "MAX_WAIT_FOR_SPEECH_SECONDS", 0.3)
+    fired: list[str] = []
+    rec = ScriptedRecorder([_chunk(3000)] + [_chunk(0)] * 30)
+    pcm = audio_mod.capture_utterance(
+        rec, _fast_config(), on_speech_start=lambda: fired.append("stop")
+    )
+    assert fired == []
+    _ = pcm  # single blip may or may not form an utterance; callback must not fire
+
+
+def test_custom_rms_threshold_respected(monkeypatch):
+    monkeypatch.setattr(audio_mod, "MAX_WAIT_FOR_SPEECH_SECONDS", 0.3)
+    sensitive = AudioConfig(interrupt_rms_threshold=100.0)
+    deaf = AudioConfig(interrupt_rms_threshold=100000.0)
+    assert (
+        audio_mod.capture_utterance(
+            ScriptedRecorder([_chunk(3000)] * 4 + [_chunk(0)] * 10), sensitive
+        )
+        is not None
+    )
+    assert (
+        audio_mod.capture_utterance(
+            ScriptedRecorder([_chunk(3000)] * 4 + [_chunk(0)] * 10), deaf
+        )
+        is None
+    )
+
+
+def test_near_match_stop_words_only_in_tiny_utterances():
+    for word in ("wait", "right", "he", "weight", "white", "stop", "pause"):
+        assert match_interruption_control(word) == "pause"
+    assert match_interruption_control("weight please") == "pause"
+    assert match_interruption_control("he is here today ok") is None
+    assert match_interruption_control("the white house today ok") is None
+
+
+def test_stop_happens_before_transcribe(scripted_capture):
+    """Playback stops on sustained input, before the transcript decides."""
+    order: list[str] = []
+    tts = FakeTTS(block_first_n=1)
+
+    class OrderTTS(FakeTTS):
+        pass
+
+    tts.stop = lambda: (order.append("stop"), FakeTTS.stop(tts))  # type: ignore[method-assign]
+
+    class OrderSTT(LiveSTT):
+        def transcribe(self, pcm, rate):
+            order.append("transcribe")
+            return super().transcribe(pcm, rate)
+
+    session = _live_session(tts=tts, stt=OrderSTT(["wait", "continue"]))
+    scripted_capture.append(_pcm())  # "wait" during playback
+    scripted_capture.append(_pcm())  # "continue" while paused
+    outcome, _ = session._speak_live("One. Two.")
+    assert outcome == "done"
+    assert order.index("stop") < order.index("transcribe")
+
+
+def test_interrupt_diagnostic_saves_wav_without_secrets(tmp_path, monkeypatch, caplog):
+    import logging
+    import wave as _wave
+
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    session = _live_session()
+    with caplog.at_level(logging.INFO, logger="nexus.voice"):
+        session._save_interrupt_diagnostic(_pcm(3000, 1600 * 8))
+    saved = list(tmp_path.glob("nexus-interrupt-*.wav"))
+    assert len(saved) == 1
+    with _wave.open(str(saved[0]), "rb") as wf:
+        assert wf.getframerate() == 16000
+        assert wf.getnframes() == 1600 * 8
+    logged = caplog.text
+    assert "interrupt audio saved" in logged
+    assert "rms=" in logged
+    assert "nvapi" not in logged.lower()
+
+
+def test_create_audio_config_maps_interrupt_threshold():
+    from app.core.config import Settings
+    from app.voice.factories import create_audio_config
+
+    cfg = create_audio_config(
+        Settings(ai_provider="echo", voice_interrupt_rms_threshold=1234.0)
+    )
+    assert cfg.interrupt_rms_threshold == 1234.0
+    assert create_audio_config(Settings(ai_provider="echo")).interrupt_rms_threshold == 500.0

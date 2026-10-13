@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     voice_silence_timeout_seconds: float = Field(default=1.2)
     voice_max_utterance_seconds: float = Field(default=15.0)
 
+    # Interruption loudness gate (RMS energy). While NEXUS speaks, sustained
+    # mic audio above this level stops playback promptly ("wait"). If room
+    # speakers falsely trigger it, raise this value; a headset normally
+    # works at the default. Values <= 0 use the built-in default (500).
+    voice_interrupt_rms_threshold: float = Field(default=500.0)
+
     voice_tts_rate: int = Field(default=175)
     voice_tts_volume: float = Field(default=1.0)
 
