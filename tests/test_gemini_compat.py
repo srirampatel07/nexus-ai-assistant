@@ -65,7 +65,7 @@ def test_wire_reemits_signature_verbatim():
 
 
 def test_wire_without_metadata_is_unchanged():
-    """Groq path: no extras in, no extra keys out (strict providers)."""
+    """Strict-provider path: no extras in, no extra keys out."""
     wire = LlmToolCall(id="c1", name="system.info", arguments={}).to_wire()
     assert set(wire) == {"id", "type", "function"}
     assert set(wire["function"]) == {"name", "arguments"}

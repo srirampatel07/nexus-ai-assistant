@@ -151,7 +151,7 @@ async def test_endless_tool_requests_terminate(wired):
 
 
 @pytest.mark.asyncio
-async def test_synthesis_failure_is_honest(wired):
+async def test_synthesis_failure_is_honest(wired, tmp_path):
     """Budget exhausted + synthesis empty -> honest fallback, never blank."""
     settings, registry, executor = wired
     provider = ScriptedLoopProvider(
@@ -162,4 +162,8 @@ async def test_synthesis_failure_is_honest(wired):
     reply = await assistant.achat("research this")
     assert reply.strip()
     assert "couldn't compose" in reply
-    assert "3 tool call" in reply
+    # Same identical call repeated: executed once, cached result reused —
+    # no duplicate side effects on retry.
+    assert "1 tool call" in reply
+    audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(audit_lines) == 1

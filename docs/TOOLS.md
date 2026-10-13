@@ -1,4 +1,4 @@
-# NEXUS Tool Architecture (Phase 2)
+# NEXUS Tool Architecture (Phase 2 + Phase 7 orchestration)
 
 NEXUS uses tools through a strict pipeline. No tool bypasses the executor:
 
@@ -7,6 +7,20 @@ User -> AI (tool definitions) -> ToolCall -> ToolExecutor
   -> validate -> permission check -> confirmation? -> execute (timeout)
   -> audit -> ToolResult -> AI -> final answer
 ```
+
+## Phase 7 agent loop (`app/brain/assistant.py` + `app/brain/tasks.py`)
+
+The bounded loop (`MAX_TOOL_ITERATIONS` turns, `TOOL_LOOP_TIMEOUT_SECONDS`
+wall-clock, first turn always runs) offers registry definitions to the
+model, executes every returned call in turn order, feeds each
+`{ok, output, error}` result back, and finishes with a tool-free synthesis
+turn — or an honest fallback naming completed steps and blockers when the
+budget runs out. A per-request `TaskTracker` records each step; later turns
+see a compact progress note, and identical repeated calls reuse the cached
+result instead of re-executing (no duplicate side effects on retry).
+Single-turn parallel calls still all run. One oversized result is cut at
+`TOOL_RESULT_MAX_CHARS` with a truncation marker instead of blowing up
+model context. Empty model turns never produce blank replies.
 
 ## Modules
 

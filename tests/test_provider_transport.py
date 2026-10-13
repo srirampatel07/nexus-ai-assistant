@@ -1,8 +1,9 @@
-"""Local llama.cpp provider tests (local Qwen3-8B integration).
+"""OpenAI-compatible transport tests (mocked HTTP, no servers, no inference).
 
-All HTTP mocked via httpx.MockTransport — the suite never needs a running
-server. Local mode = openai-compatible provider, local base URL, exact
-server model id, empty API key (no Bearer header sent).
+These exercise the shared transport also used by the NVIDIA provider:
+exact endpoint/model use, Bearer handling, health checks, error mapping,
+and honest tool-unsupported fallback. All HTTP is mocked via
+httpx.MockTransport — the suite never needs a running server.
 """
 
 import httpx
@@ -17,23 +18,23 @@ from app.core.config import Settings
 from app.core.exceptions import ProviderUnavailable
 from app.tools.schemas import LlmTool
 
-LOCAL_BASE = "http://127.0.0.1:8080/v1"
-LOCAL_MODEL = "Qwen3-8B-Q4_K_M"
+MOCK_BASE = "https://mock.test/v1"
+MOCK_MODEL = "mock-model-1"
 
 
-def _local_settings(**over):
+def _mock_settings(**over):
     kwargs = dict(
         ai_provider="openai-compatible",
-        ai_model=LOCAL_MODEL,
+        ai_model=MOCK_MODEL,
         ai_api_key="",
-        ai_base_url=LOCAL_BASE,
+        ai_base_url=MOCK_BASE,
     )
     kwargs.update(over)
     return Settings(**kwargs)
 
 
 def _patched(handler, **provider_kw):
-    params = dict(base_url=LOCAL_BASE, model=LOCAL_MODEL, api_key="")
+    params = dict(base_url=MOCK_BASE, model=MOCK_MODEL, api_key="")
     params.update(provider_kw)
     provider = OpenAICompatibleProvider(**params)
     real_client = httpx.AsyncClient
@@ -53,19 +54,19 @@ def _patched(handler, **provider_kw):
 
 
 def _messages():
-    return [ChatMessage(role="user", content="hello local")]
+    return [ChatMessage(role="user", content="hello mock")]
 
 
-def test_local_settings_build_compatible_provider_without_key():
-    provider = create_provider(_local_settings())
+def test_transport_settings_build_compatible_provider_without_key():
+    provider = create_provider(_mock_settings())
     assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider._base_url == LOCAL_BASE
-    assert provider._model == LOCAL_MODEL
+    assert provider._base_url == MOCK_BASE
+    assert provider._model == MOCK_MODEL
     assert "Authorization" not in provider._headers()
 
 
 @pytest.mark.asyncio
-async def test_local_base_url_and_model_used(monkeypatch):
+async def test_transport_base_url_and_model_used(monkeypatch):
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -75,28 +76,28 @@ async def test_local_base_url_and_model_used(monkeypatch):
 
         seen.update(json.loads(request.read().decode()))
         return httpx.Response(
-            200, json={"choices": [{"message": {"content": "hi from qwen"}}]}
+            200, json={"choices": [{"message": {"content": "hi from mock"}}]}
         )
 
     provider, fake = _patched(handler)
     monkeypatch.setattr(httpx, "AsyncClient", fake)
     resp = await provider.send_message(_messages())
-    assert resp.content == "hi from qwen"
-    assert seen["url"] == f"{LOCAL_BASE}/chat/completions"
-    assert seen["model"] == LOCAL_MODEL
+    assert resp.content == "hi from mock"
+    assert seen["url"] == f"{MOCK_BASE}/chat/completions"
+    assert seen["model"] == MOCK_MODEL
     assert seen["auth"] is None  # empty key: no credential sent
 
 
 @pytest.mark.asyncio
-async def test_local_health_check_hits_models_endpoint(monkeypatch):
+async def test_transport_health_check_hits_models_endpoint(monkeypatch):
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
-        return httpx.Response(200, json={"data": [{"id": LOCAL_MODEL}]})
+        return httpx.Response(200, json={"data": [{"id": MOCK_MODEL}]})
 
     provider = OpenAICompatibleProvider(
-        base_url=LOCAL_BASE, model=LOCAL_MODEL, api_key=""
+        base_url=MOCK_BASE, model=MOCK_MODEL, api_key=""
     )
     real_client = httpx.AsyncClient
     transport = httpx.MockTransport(handler)
@@ -120,11 +121,11 @@ async def test_local_health_check_hits_models_endpoint(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
     assert await provider.health_check() is True
-    assert seen["url"] == f"{LOCAL_BASE}/models"
+    assert seen["url"] == f"{MOCK_BASE}/models"
 
 
 @pytest.mark.asyncio
-async def test_local_server_unavailable(monkeypatch):
+async def test_transport_server_unavailable(monkeypatch):
     class Refused:
         def __init__(self, *a, **k):
             pass
@@ -142,7 +143,7 @@ async def test_local_server_unavailable(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_timeout(monkeypatch):
+async def test_transport_timeout(monkeypatch):
     class Slow:
         def __init__(self, *a, **k):
             pass
@@ -160,7 +161,7 @@ async def test_local_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_malformed_response(monkeypatch):
+async def test_transport_malformed_response(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"nope": "no choices here"})
 
@@ -171,8 +172,8 @@ async def test_local_malformed_response(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_tools_unsupported_falls_back_to_plain(monkeypatch):
-    """llama.cpp may not support tool calls: fall back honestly, never fake."""
+async def test_transport_tools_unsupported_falls_back_to_plain(monkeypatch):
+    """Endpoints without tool support fall back honestly, never fake."""
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:

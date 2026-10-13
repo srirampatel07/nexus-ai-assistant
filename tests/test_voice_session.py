@@ -1,4 +1,4 @@
-"""VoiceSession tests (Phase 4). Fakes only: no mic, STT engine, or Groq."""
+"""VoiceSession tests. Fakes only: no mic, no STT engine, no network."""
 
 import pytest
 

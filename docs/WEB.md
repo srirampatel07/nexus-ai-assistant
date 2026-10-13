@@ -2,8 +2,12 @@
 
 Web search, page retrieval, and document-navigation browser sessions —
 all through the standard Phase 2 tool pipeline (registry → executor →
-permissions → confirmation → audit). No parallel execution architecture,
-no new network dependencies (`httpx` + stdlib only).
+permissions → confirmation → audit). Retrieval is plain HTTP + parsing
+(DuckDuckGo results pages, static page text) — it is not AI. All
+reasoning over retrieved content (comparison, summarization, answer
+generation) is done by the NVIDIA cloud text model through the normal
+assistant tool loop, with source URLs cited. No new network dependencies
+(`httpx` + stdlib only). No paid APIs, no additional external services.
 
 ## Architecture
 
@@ -52,7 +56,7 @@ search endpoint is keyless):
 ```
 WEB_ENABLED=true
 WEB_SEARCH_PROVIDER=duckduckgo
-WEB_SEARCH_URL=https://api.duckduckgo.com/
+WEB_SEARCH_URL=https://html.duckduckgo.com/html/
 WEB_SEARCH_TIMEOUT=15
 WEB_SEARCH_MAX_RESULTS=8
 WEB_FETCH_TIMEOUT=20
@@ -61,9 +65,10 @@ WEB_FETCH_MAX_REDIRECTS=5
 WEB_TEXT_MAX_CHARS=20000
 ```
 
-`WEB_ENABLED=false` removes all eight tools; everything else works
-unchanged. A custom `WEB_SEARCH_URL` must serve the DuckDuckGo
-Instant Answer JSON shape (`AbstractText`/`RelatedTopics`).
+`WEB_ENABLED=false` removes the eight `web.*`/`browser.*` tools; `brave.open`
+is independent of this flag (desktop capability, like `applications.launch`).
+A custom `WEB_SEARCH_URL` pointing at `https://api.duckduckgo.com/` uses the
+legacy Instant Answer JSON shape (`AbstractText`/`RelatedTopics`).
 
 ## Provider setup
 
@@ -80,7 +85,7 @@ empty result set) instead of fabricated results.
 
 ```powershell
 python run.py --text
-> search the web for the current Groq model lineup
+> search the web for the current NVIDIA Nemotron model lineup
 > fetch https://example.com and summarize it
 > open https://example.com in the browser, list its links, follow link 1
 > search for the latest ESP32 documentation

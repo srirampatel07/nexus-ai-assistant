@@ -5,7 +5,10 @@ __pycache__/
 venv/
 .env
 data/*.db
+data/*.db-journal
 data/*.sqlite*
+data/*.wal
+data/*.shm
 data/vosk-model-*
 data/*.zip
 logs/*.log

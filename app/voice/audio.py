@@ -1,20 +1,24 @@
-"""Microphone capture abstraction (Phase 4).
+"""Microphone capture abstraction (local device utility, not AI inference).
 
 `AudioRecorder` is a protocol: production uses `SoundDeviceRecorder`
 (PortAudio), tests inject fakes serving synthetic PCM. Nothing here imports
 audio libraries at module load — native backends load lazily so text mode
 and tests never break when they are missing.
 
-Privacy: captured PCM lives in memory only, is handed to STT, then dropped.
-Nothing is written to disk or logged.
+Privacy: captured PCM lives in memory only. For live voice mode it is
+encoded to WAV in memory and sent to the verified NVIDIA cloud STT
+endpoint over HTTPS for transcription, then dropped. Nothing is written
+to disk, logged, or sent anywhere else.
 """
 
 from __future__ import annotations
 
+import io
 import math
 import struct
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -62,6 +66,33 @@ def chunk_rms(pcm: bytes) -> float:
     count = len(pcm) // 2
     samples = struct.unpack(f"<{count}h", pcm[: count * 2])
     return math.sqrt(sum(s * s for s in samples) / count)
+
+
+def pcm_to_wav_bytes(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
+    """Encode 16-bit mono PCM as a WAV container in memory (stdlib only).
+
+    The verified NVIDIA STT endpoint accepts WAV/OPUS/FLAC; NEXUS sends
+    WAV because it is encodable without extra dependencies. Raises
+    ValueError for empty audio or invalid parameters (callers map this
+    to STTError, never to a local-model fallback).
+    """
+    if not pcm or len(pcm) < 2:
+        raise ValueError("empty audio: no speech captured")
+    if sample_rate <= 0:
+        raise ValueError(f"invalid sample_rate {sample_rate}")
+    if channels not in (1, 2):
+        raise ValueError(f"invalid channels {channels}")
+    if len(pcm) % 2 != 0:
+        pcm = pcm[:-1]
+        if len(pcm) < 2:
+            raise ValueError("empty audio: no speech captured")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm)
+    return buf.getvalue()
 
 
 class SoundDeviceRecorder:

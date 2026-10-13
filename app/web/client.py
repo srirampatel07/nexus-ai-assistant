@@ -2,8 +2,11 @@
 
 All outbound traffic flows through here:
 
-- `search_ddg()`: DuckDuckGo Instant Answer API
-  (`https://api.duckduckgo.com/?q=...&format=json`, verified live; keyless).
+- `search_ddg()`: keyless DuckDuckGo HTML results page by default
+  (`https://html.duckduckgo.com/html/?q=...`, verified live), parsed for
+  real result links. A legacy Instant Answer JSON endpoint
+  (`https://api.duckduckgo.com/?q=...&format=json`) still parses when
+  configured via `WEB_SEARCH_URL`.
   Returns abstract + related topics as structured results.
 - `fetch_url()`: page retrieval with per-hop SSRF validation (initial URL
   AND every redirect target), redirect cap, response byte cap, and an

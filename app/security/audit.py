@@ -33,7 +33,7 @@ _SENSITIVE_KEYS = {
 }
 
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/=]+", re.IGNORECASE)
-_LONG_TOKEN_RE = re.compile(r"\b(gsk_|sk-|xox[bap]-)[A-Za-z0-9\-_]{8,}")
+_LONG_TOKEN_RE = re.compile(r"\b(gsk_|sk-|xox[bap]-|nvapi[-_])[A-Za-z0-9\-_]{8,}")
 
 
 def sanitize(value: Any) -> Any:

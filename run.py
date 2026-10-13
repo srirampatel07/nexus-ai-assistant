@@ -1,8 +1,17 @@
-"""NEXUS entry point (Phase 6: text + voice + vision + web + health).
+"""NEXUS entry point (Phase 8: text + voice + vision + web + orchestration + health).
+
+All AI inference uses NVIDIA cloud APIs: chat/reasoning/tools via Nemotron
+3.5 Lightning, vision via the hosted vision model, and voice speech-to-text
+via hosted Parakeet ASR (+ optional Magpie cloud TTS). Microphone audio is
+captured only after the user explicitly starts voice mode and is sent to
+the verified NVIDIA STT endpoint for transcription; transcripts go to the
+existing assistant with tools + memory. Spoken replies default to the local
+Windows OS synthesizer (SAPI — an OS utility, not NVIDIA); `VOICE_TTS_BACKEND=nvidia`
+selects NVIDIA cloud Magpie TTS instead. Text mode always works.
 
 Usage:
     python run.py --text     # interactive text conversation (tools enabled)
-    python run.py --voice    # microphone voice conversation
+    python run.py --voice    # live voice conversation (mic + NVIDIA STT)
     python run.py --voice --script "hello | status"   # headless pipeline check
     python run.py --health    # print provider/config health as JSON
     python run.py --version   # print version
@@ -131,11 +140,25 @@ def cmd_vision(assistant, arg_text: str) -> str:  # type: ignore[no-untyped-def]
     vision_enabled = bool(getattr(assistant.settings, "vision_enabled", True))
     if not vision_enabled:
         return "Vision is disabled (VISION_ENABLED=false)."
-    vision_model = getattr(assistant.settings, "vision_model", "?")
+    settings = getattr(assistant, "settings", None)
+    vision_model = getattr(settings, "vision_model", "?")
+    if settings is not None and getattr(settings, "ai_provider", "").strip().lower() in (
+        "nvidia",
+        "nvidia-nemotron",
+        "nvidia_nemotron",
+        "nemotron",
+    ):
+        try:
+            from app.brain.provider import resolve_nvidia_vision_settings
+
+            _, resolved, _ = resolve_nvidia_vision_settings(settings)
+            vision_model = resolved or vision_model
+        except Exception:
+            pass
     # M1: disclose the basename only, never the full filesystem path.
     print(
         f"[vision] Uploading '{Path(image_path).name}' for one-time analysis "
-        f"with {vision_model} (local file input only; nothing else is sent)."
+        f"with {vision_model} (NVIDIA cloud; nothing else is sent)."
     )
     return assistant.chat_with_image(
         image_path, question, confirm=console_confirm
@@ -148,13 +171,69 @@ def cmd_health(debug: bool = False) -> int:
     settings = get_settings()
     setup_logging(settings.log_level)
     info = get_nexus_info(settings)
+    # Cloud-only vision verification: resolved model/endpoint + key
+    # presence, no secrets, no image upload, no API quota consumed.
+    vision_info: dict = {}
+    if bool(getattr(settings, "vision_enabled", True)):
+        try:
+            from app.brain.provider import (
+                nvidia_vision_stale_override,
+                resolve_nvidia_vision_settings,
+            )
+
+            if settings.ai_provider.strip().lower() in (
+                "nvidia",
+                "nvidia-nemotron",
+                "nvidia_nemotron",
+                "nemotron",
+            ):
+                v_base, v_model, v_key = resolve_nvidia_vision_settings(settings)
+                v_detail = (
+                    "key set, no image uploaded by health check"
+                    if v_key
+                    else "set NVIDIA_API_KEY in .env "
+                    "(VISION_API_KEY fallback also empty)"
+                )
+                stale = nvidia_vision_stale_override(settings)
+                if stale:
+                    v_detail += (
+                        f" [note: stale override {stale!r} retired "
+                        "2026-08-26, ignored — remove it from .env]"
+                    )
+                vision_info = {
+                    "vision_status": "configured" if v_key else "missing_credentials",
+                    "vision_model": v_model,
+                    "vision_base_url": v_base,
+                    "vision_detail": v_detail,
+                }
+        except Exception as exc:  # vision must never break text health
+            vision_info = {"vision_status": "warn", "vision_detail": str(exc)}
     try:
         provider = create_provider(settings)
-        healthy = asyncio.run(provider.health_check())
+        # NVIDIA provider offers categorized health (missing creds, auth,
+        # rate-limit, network, ok); other providers keep the bool check.
+        detail_fn = getattr(provider, "health_detail", None)
+        if callable(detail_fn):
+            detail = asyncio.run(detail_fn())  # type: ignore[operator]
+            healthy = bool(detail.get("ok"))
+            out = {
+                **info,
+                **vision_info,
+                "healthy": healthy,
+                "provider_status": detail.get("status"),
+                "provider_detail": detail.get("detail"),
+            }
+        else:
+            healthy = asyncio.run(provider.health_check())
+            out = {**info, **vision_info, "healthy": healthy}
     except Exception as exc:  # never crash: report honestly
-        print(json.dumps({**info, "healthy": False, "error": str(exc)}, indent=2))
+        print(
+            json.dumps(
+                {**info, **vision_info, "healthy": False, "provider_status": "error", "error": str(exc)},
+                indent=2,
+            )
+        )
         return 1
-    out = {**info, "healthy": healthy}
     if debug:
         out["config"] = settings.model_dump_safe()
     print(json.dumps(out, indent=2))
@@ -169,7 +248,7 @@ def cmd_text(debug: bool = False, assistant=None) -> int:  # type: ignore[no-unt
     if assistant is None:
         assistant = build_assistant(settings)
 
-    print(f"{settings.app_name} v{__version__} - text mode (Phase 6, tools + vision + web enabled).")
+    print(f"{settings.app_name} v{__version__} - text mode (Phase 7, tools + vision + web enabled).")
     print("Type /help for commands, /exit to quit.")
     if debug:
         print(f"[debug] provider={settings.ai_provider} model={settings.ai_model}")
@@ -240,8 +319,17 @@ def cmd_text(debug: bool = False, assistant=None) -> int:  # type: ignore[no-unt
 
 
 def cmd_voice(script: list[str] | None = None) -> int:
-    """Real voice interface (Phase 4). Never crashes: missing backends or
-    devices produce clear setup guidance (exit 2), never a traceback."""
+    """Voice interface (NVIDIA cloud speech + local OS TTS default).
+
+    Live mode captures microphone audio only after the user explicitly
+    starts `--voice`, transcribes each utterance with verified NVIDIA
+    cloud Parakeet STT, sends transcripts to the existing NVIDIA Nemotron
+    assistant (tools + memory), and speaks replies with the configured
+    TTS backend. Never crashes: missing credentials, unavailable devices,
+    or network failures produce clear guidance (exit 2), never a
+    traceback. `--script` runs headless pipeline checks with canned
+    transcripts (no mic, no network). Text mode always works.
+    """
     from app.voice.audio import check_microphone
     from app.voice.errors import VoiceUnavailableError
     from app.voice.factories import (
@@ -272,11 +360,26 @@ def cmd_voice(script: list[str] | None = None) -> int:
         mic_ok, mic_detail = True, "scripted (no microphone needed)"
     else:
         mic_ok, mic_detail = check_microphone(settings.voice_sample_rate)
+    stt_label = "script" if script is not None else settings.voice_stt_backend
     print("NEXUS Voice Mode")
-    print(f"STT: {settings.voice_stt_backend if script is None else 'script'} ({stt_detail})")
+    print(f"STT: {stt_label} ({stt_detail})")
     print(f"TTS: {settings.voice_tts_backend} ({tts_detail})")
     print(f"Microphone: {'available' if mic_ok else 'UNAVAILABLE'} ({mic_detail})")
     print(f"Speaker: {'available' if tts_ok else 'UNAVAILABLE'} ({tts_detail})")
+    if script is None and not stt_ok:
+        print(
+            "Cannot start live voice mode: the speech service is not ready. "
+            "Set NVIDIA_API_KEY in .env (see docs/VOICE.md), or use text "
+            "mode (python run.py --text) or a headless check "
+            "(python run.py --voice --script \"hello | status\")."
+        )
+        return 2
+    if script is None and not tts_ok:
+        print(
+            "Warning: spoken output is unavailable; replies will print as "
+            "text only. Fix TTS (see docs/VOICE.md) or use "
+            "VOICE_TTS_BACKEND=null for silent mode."
+        )
     if not mic_ok:
         print("Cannot start voice mode without a microphone. See docs/VOICE.md.")
         return 2
@@ -296,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--text", action="store_true", help="interactive text mode")
     parser.add_argument("--health", action="store_true", help="health check as JSON")
     parser.add_argument("--version", action="store_true", help="print version")
-    parser.add_argument("--voice", action="store_true", help="microphone voice mode")
+    parser.add_argument("--voice", action="store_true", help="voice mode (live mic + NVIDIA cloud STT; --script for headless check)")
     parser.add_argument(
         "--script",
         default=None,

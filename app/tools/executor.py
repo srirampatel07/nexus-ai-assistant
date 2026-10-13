@@ -157,7 +157,10 @@ class ToolExecutor:
                     "Re-run in interactive mode and confirm to allow it.",
                 )
 
-        # 6-8. Execute with timeout, capture result.
+        # 6-8. Execute with timeout, capture result. Unexpected tool
+        # exceptions are converted to failed results (audited) so one bad
+        # tool can never crash the agent loop; the model sees the error
+        # and can adjust.
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(tool.execute, validated),
@@ -176,6 +179,21 @@ class ToolExecutor:
             )
             return ToolResult(
                 ok=False, error=f"Tool timed out after {tool.timeout_seconds}s."
+            )
+        except Exception as exc:  # noqa: BLE001 - tool bugs must not kill chat
+            log.warning("tool '%s' raised unexpectedly: %s", tool_name, exc)
+            self.audit.record(
+                tool_name=tool_name,
+                arguments=args,
+                risk_level=risk.value,
+                permission="allowed",
+                confirmation=confirmation,
+                status="failed",
+                duration_ms=elapsed_ms(),
+                error=f"Tool raised {type(exc).__name__}: {exc}",
+            )
+            return ToolResult(
+                ok=False, error=f"Tool '{tool_name}' failed unexpectedly."
             )
         result.duration_ms = elapsed_ms()
 
