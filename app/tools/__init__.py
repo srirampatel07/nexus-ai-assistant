@@ -34,7 +34,7 @@ __all__ = ["build_default_registry", "build_default_executor"]
 
 
 def build_default_registry(settings: Settings) -> ToolRegistry:
-    """Create a registry with all built-in Phase 2 tools."""
+    """Create a registry with all built-in Phase 2 tools + Phase 8 Jarvis parity."""
     registry = ToolRegistry()
     fs_ctx = FilesystemContext(
         allowed_roots=settings.nexus_allowed_roots,
@@ -46,6 +46,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
     # Current-search session shared by web.search (records real results) and
     # brave.open (resolves "result N" references to exact real URLs).
     search_session = SearchSession()
+    privacy = str(getattr(settings, "nexus_privacy_mode", "guarded")).lower()
     tools = [
         SystemInfoTool(),
         SystemCpuTool(),
@@ -68,6 +69,83 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         # internal reader sessions below.
         BraveOpenTool(session=search_session),
     ]
+    # Phase 8 Jarvis parity tools (all follow the same Tool ABC + audit path).
+    try:
+        from app.tools.connectors import (
+            ConnectorsStatusTool,
+            GithubIssuesTool,
+            GithubRepoTool,
+        )
+        from app.tools.docker import (
+            DockerImagesTool,
+            DockerLogsTool,
+            DockerPsTool,
+            DockerStartTool,
+            DockerStopTool,
+        )
+        from app.tools.git import GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
+        from app.tools.imagegen import ImageGenerateTool
+        from app.tools.reminders import RemindersCreateTool, RemindersListTool
+        from app.tools.routines import (
+            RoutinesDeleteTool,
+            RoutinesDueTool,
+            RoutinesListTool,
+            RoutinesScheduleTool,
+        )
+        from app.tools.screen import ScreenCaptureTool, ScreenPointTool
+
+        if bool(getattr(settings, "screen_capture_enabled", True)):
+            tools.extend([
+                ScreenCaptureTool(privacy_mode=privacy, project_root="."),
+                ScreenPointTool(),
+            ])
+        tools.extend([
+            GitStatusTool(allowed_roots=settings.nexus_allowed_roots),
+            GitLogTool(allowed_roots=settings.nexus_allowed_roots),
+            GitDiffTool(allowed_roots=settings.nexus_allowed_roots),
+            GitCommitTool(allowed_roots=settings.nexus_allowed_roots),
+            DockerPsTool(), DockerImagesTool(), DockerLogsTool(),
+            DockerStartTool(), DockerStopTool(),
+            RemindersCreateTool(db_path=getattr(settings, "reminders_db_path", "data/reminders.db")),
+            RemindersListTool(db_path=getattr(settings, "reminders_db_path", "data/reminders.db")),
+            RoutinesScheduleTool(db_path=getattr(settings, "routines_db_path", "data/routines.db")),
+            RoutinesListTool(db_path=getattr(settings, "routines_db_path", "data/routines.db")),
+            RoutinesDueTool(db_path=getattr(settings, "routines_db_path", "data/routines.db")),
+            RoutinesDeleteTool(db_path=getattr(settings, "routines_db_path", "data/routines.db")),
+            ConnectorsStatusTool(), GithubRepoTool(), GithubIssuesTool(),
+        ])
+        try:
+            from app.tools.gmail import GmailInboxTool, GmailSendTool, GmailReadTool, GmailReplyTool
+            from app.tools.whatsapp import WhatsappDraftTool, WhatsappSendTool
+            tools.extend([GmailInboxTool(), GmailReadTool(), GmailSendTool(), GmailReplyTool(),
+                          WhatsappSendTool(), WhatsappDraftTool()])
+        except Exception:
+            pass
+        try:
+            from app.tools.connectors_extra import (
+                JiraSearchTool,
+                NotionSearchTool,
+                SlackSearchTool,
+                TodoistListTool,
+            )
+            from app.tools.research import ResearchReportTool
+
+            tools.extend([
+                SlackSearchTool(), NotionSearchTool(), JiraSearchTool(),
+                TodoistListTool(),
+            ])
+            if bool(getattr(settings, "web_enabled", True)):
+                from app.web.client import WebContext as _WC
+                try:
+                    tools.append(ResearchReportTool(ctx=_WC.from_settings(settings)))
+                except Exception:
+                    tools.append(ResearchReportTool())
+        except Exception:
+            pass
+        if bool(getattr(settings, "image_gen_enabled", True)):
+            tools.append(ImageGenerateTool(project_root="."))
+    except Exception:
+        pass
     if settings.web_enabled:
         from app.browser.session import BrowserManager
         from app.tools.browser import (

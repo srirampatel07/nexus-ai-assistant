@@ -248,7 +248,7 @@ def cmd_text(debug: bool = False, assistant=None) -> int:  # type: ignore[no-unt
     if assistant is None:
         assistant = build_assistant(settings)
 
-    print(f"{settings.app_name} v{__version__} - text mode (Phase 7, tools + vision + web enabled).")
+    print(f"{settings.app_name} v{__version__} - text mode (Phase 8 Jarvis parity, tools + vision + web enabled).")
     print("Type /help for commands, /exit to quit.")
     if debug:
         print(f"[debug] provider={settings.ai_provider} model={settings.ai_model}")
@@ -266,9 +266,46 @@ def cmd_text(debug: bool = False, assistant=None) -> int:  # type: ignore[no-unt
             print("Goodbye.")
             return 0
         if low == "/help":
-            print("Commands: /help /tools /memory /memory search <text> /forget <id> /clear /status /vision <image-path> [question] /exit")
+            print("Commands: /help /tools /memory /memory search <text> /forget <id> /clear /status /vision <image-path> [question] /persona <name> /tone <name> /screen /briefing /exit")
             print("Tools needing approval will ask: Allow? [y/N]")
             print("Vision (/vision) sends only that image to the vision model; ordinary chat sends no images.")
+            print("/screen captures the desktop to data/screenshots/ for /vision. Personas: assistant,tutor,coach,interviewer,writer,debugger.")
+            continue
+        if low.startswith("/persona"):
+            from app.personas.catalog import PERSONAS, resolve_persona
+            arg = user[len("/persona"):].strip().lower()
+            if not arg or arg not in PERSONAS:
+                print(f"Usage: /persona <name>  ({', '.join(sorted(PERSONAS))})")
+                continue
+            settings.nexus_persona = arg
+            p = resolve_persona(arg)
+            print(f"Persona: {arg} — {p['description']}")
+            continue
+        if low == "/personas":
+            from app.personas.catalog import PERSONAS
+            for k in sorted(PERSONAS):
+                print(f"- {k}: {PERSONAS[k]['description']}")
+            continue
+        if low.startswith("/tone"):
+            from app.personas.catalog import TONES
+            arg = user[len("/tone"):].strip().lower()
+            if not arg or arg not in TONES:
+                print(f"Usage: /tone <name>  ({', '.join(sorted(TONES))})")
+                continue
+            settings.nexus_tone = arg
+            print(f"Tone: {arg}")
+            continue
+        if low == "/screen":
+            try:
+                from app.screen.capture import capture_screen
+                shot = capture_screen(project_root=".")
+                print(f"Screenshot: {shot.path} ({shot.width}x{shot.height}). Ask me with /vision \"{shot.path}\" <question>.")
+            except Exception as exc:
+                print(f"Screen capture failed: {exc}")
+            continue
+        if low == "/briefing":
+            from app.server.briefing import build_briefing
+            print(json.dumps(build_briefing(settings, conversation_id=assistant.conversation_id), indent=2))
             continue
         if low == "/tools":
             tools = assistant.registry.list_tools() if assistant.registry else []
@@ -406,6 +443,10 @@ def main(argv: list[str] | None = None) -> int:
         help="headless voice check: '|' separated utterances, no mic needed",
     )
     parser.add_argument("--debug", action="store_true", help="verbose tool/config output")
+    parser.add_argument("--briefing", action="store_true", help="print Command Center briefing JSON")
+    parser.add_argument("--routines-due", action="store_true", help="print overdue routines JSON")
+    parser.add_argument("--routines-run", action="store_true", help="execute due routines via assistant")
+    parser.add_argument("--serve", action="store_true", help="serve Command Center HTTP API on 127.0.0.1:8765")
     args = parser.parse_args(argv)
 
     if args.version:
@@ -413,6 +454,31 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.health:
         return cmd_health(debug=args.debug)
+    if args.briefing:
+        from app.server.briefing import build_briefing
+        settings = get_settings()
+        print(json.dumps(build_briefing(settings), indent=2))
+        return 0
+    if args.routines_due:
+        from app.routines.store import RoutineStore
+        settings = get_settings()
+        due = RoutineStore(settings.routines_db_path).due()
+        print(json.dumps({"due": [{"id": r.id, "name": r.name, "prompt": r.prompt} for r in due]}, indent=2))
+        return 0
+    if args.routines_run:
+        from app.main import build_assistant
+        settings = get_settings()
+        setup_logging(settings.log_level)
+        assistant = build_assistant(settings)
+        from app.routines.runner import run_due_routines
+        print(json.dumps(run_due_routines(assistant), indent=2))
+        return 0
+    if args.serve:
+        from app.server.api import serve_briefing_api
+        settings = get_settings()
+        setup_logging(settings.log_level)
+        serve_briefing_api(settings)
+        return 0
     if args.voice:
         script = (
             [s.strip() for s in args.script.split("|") if s.strip()]

@@ -63,7 +63,7 @@ def get_nexus_info(settings: Settings | None = None) -> dict:
     return {
         "name": resolved.app_name,
         "version": __version__,
-        "phase": 7,
+        "phase": 8,
         "environment": resolved.environment,
         "ai_provider": resolved.ai_provider,
         "ai_model": ai_model,

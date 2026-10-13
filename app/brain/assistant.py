@@ -50,6 +50,10 @@ HELP_TEXT = (
     "search the web, and open pages in your Brave browser (with approval). "
     "I also remember things you ask me to (except secrets, which I never keep). "
     "I can also describe a local image file you point me to with /vision. "
+    "Phase 8 Jarvis parity: /screen captures the desktop, screen.point shows "
+    "a Show-Me circle, git/docker tools inspect repos and containers, "
+    "reminders.* and routines.* schedule tasks, connectors.status + github.* "
+    "link apps, image.generate creates pictures, /persona + /tone change voice. "
     "Try 'what time is it', 'who are you', or 'status'. "
     "Type /help for commands, /tools to list tools, /exit to quit."
 )
@@ -102,11 +106,23 @@ class NexusAssistant:
             self.system_prompt = system_prompt
         else:
             tools = self.registry.tool_definitions() if self.registry else []
-            self.system_prompt = build_system_prompt(tools=tools)
+            self.system_prompt = build_system_prompt(
+                tools=tools,
+                persona=str(getattr(settings, "nexus_persona", "assistant")),
+                tone=str(getattr(settings, "nexus_tone", "calm")),
+            )
         self.conversation_id = conversation_id or uuid.uuid4().hex[:12]
         self.memory = memory
         self.vision_describer = vision_describer
         self._history: list[ChatMessage] = []
+        try:
+            from app.brain.budget import BudgetGuard
+            self.budget = BudgetGuard(
+                max_session_tokens=int(getattr(settings, "nexus_session_token_cap", 100000)),
+                max_reply_tokens=int(getattr(settings, "nexus_reply_token_cap", 20000)),
+            )
+        except Exception:
+            self.budget = None
 
     @property
     def tools_enabled(self) -> bool:
@@ -538,6 +554,20 @@ class NexusAssistant:
         """
         assert self.registry is not None and self.executor is not None
         llm_tools = self.registry.tool_definitions()
+        # Jarvis institute parity: smart tool pre-filter saves context.
+        try:
+            if bool(getattr(self.settings, "smart_tools_enabled", True)):
+                from app.brain.budget import select_relevant_tools
+                names = [t.name for t in llm_tools]
+                keep = set(select_relevant_tools(
+                    names, user_text,
+                    max_tools=int(getattr(self.settings, "smart_tools_max", 12)),
+                    descriptions={t.name: t.description for t in llm_tools}))
+                filtered = [t for t in llm_tools if t.name in keep]
+                if filtered:
+                    llm_tools = filtered
+        except Exception:
+            pass
         max_iters = max(1, self.settings.max_tool_iterations)
         result_cap = max(0, self.settings.tool_result_max_chars)
         timeout = max(0.0, self.settings.tool_loop_timeout_seconds)
@@ -547,6 +577,15 @@ class NexusAssistant:
         seen_calls: dict[str, object] = {}
         last_text = ""
         tool_calls_made = 0
+        try:
+            if self.budget is not None:
+                self.budget.start_reply()
+                self.budget.charge(user_text)
+                if self.budget.session_over():
+                    return ("Session budget exceeded. Start a new conversation "
+                            "or raise NEXUS_SESSION_TOKEN_CAP.")
+        except Exception:
+            pass
         for turn in range(max_iters):
             if deadline is not None and turn > 0 and time.monotonic() >= deadline:
                 log.warning("tool loop hit time budget")
@@ -624,6 +663,15 @@ class NexusAssistant:
                 seen_calls[key] = result
                 tool_calls_made += 1
                 tracker.record(call.name, result.ok)
+                try:
+                    if self.budget is not None:
+                        self.budget.charge(json.dumps(call.arguments or {}, default=str)[:4000])
+                        self.budget.charge((result.error or "")[:2000])
+                        if self.budget.reply_over() or self.budget.session_over():
+                            log.warning("tool loop hit token budget")
+                            break
+                except Exception:
+                    pass
                 event_bus.publish(
                     NexusEvent(
                         type=(

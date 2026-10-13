@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEXUS Agent Console</title>
+<style>
+:root{--bg:#070b1c;--bg2:#0d1430;--card:#131c44;--line:#26305c;--txt:#e8ecff;--mut:#9aa3c7;--acc:#7c9bff;--acc2:#22d3ee;--ok:#34d399;--bad:#f87171}
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Inter,Arial,sans-serif;background:radial-gradient(1000px 500px at 15% -10%,#1b2560 0%,var(--bg) 55%) fixed,var(--bg);color:var(--txt)}
+header{position:sticky;top:0;background:rgba(7,11,28,.9);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);z-index:5}
+.wrap{max-width:1320px;margin:0 auto;padding:14px 18px}
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.logo{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,var(--acc),var(--acc2));display:grid;place-items:center;font-weight:800;color:#070b1c}
+h1{font-size:19px;margin:0}small{color:var(--mut)}
+.pill{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;color:var(--mut)}
+.pill.ok{color:var(--ok);border-color:var(--ok)}
+.btn{background:linear-gradient(135deg,var(--acc),var(--acc2));border:0;color:#070b1c;font-weight:700;border-radius:10px;padding:8px 13px;cursor:pointer;font-size:13px}
+.btn.ghost{background:transparent;color:var(--txt);border:1px solid var(--line)}
+.btn.small{padding:5px 9px;font-size:12px}.btn:disabled{opacity:.5}
+main{display:grid;grid-template-columns:260px 1fr 300px;gap:14px;align-items:start}
+@media(max-width:1080px){main{grid-template-columns:1fr}}
+.card{background:linear-gradient(180deg,rgba(255,255,255,.04),transparent),var(--card);border:1px solid var(--line);border-radius:14px;padding:13px;margin-bottom:14px}
+.card h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut)}
+.big{font-size:24px;font-weight:800}.sub{color:var(--mut);font-size:12px}
+.bar{height:7px;background:#070b1c;border-radius:99px;margin-top:8px;overflow:hidden;border:1px solid var(--line)}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2))}
+#chat{height:50vh;overflow:auto;display:flex;flex-direction:column;gap:9px;background:#0a1128;border:1px solid var(--line);border-radius:12px;padding:12px}
+.msg{max-width:90%;padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.me{align-self:flex-end;background:linear-gradient(135deg,var(--acc),var(--acc2));color:#070b1c}
+.ai{align-self:flex-start;background:#16204d;border:1px solid var(--line)}
+.sys{align-self:center;color:var(--mut);font-size:12px}
+.msg img{max-width:100%;border-radius:8px;margin-top:6px}
+.msg code{background:#070b1c;padding:1px 6px;border-radius:6px;font-family:Consolas,monospace}
+.msg pre{background:#070b1c;padding:8px;border-radius:8px;overflow:auto}
+.row{display:flex;gap:8px;margin-top:9px}
+input,select,textarea{width:100%;background:#0a1128;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:8px 10px;font-size:13px}
+textarea{min-height:60px;font-family:Consolas,monospace;font-size:12px}
+.qa{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+pre{background:#070b1c;border:1px solid var(--line);border-radius:10px;padding:10px;overflow:auto;max-height:200px;font-size:11.5px}
+ul{list-style:none;margin:0;padding:0;display:grid;gap:7px;max-height:220px;overflow:auto;font-size:13px}
+li{background:#0e1540;border:1px solid var(--line);border-radius:9px;padding:7px 9px}
+.tag{float:right;font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:99px;padding:0 7px}
+label{font-size:12px;color:var(--mut);display:flex;gap:6px;align-items:center;margin-top:7px}
+footer{color:var(--mut);font-size:12px;margin:16px 0 30px}
+.iconbtn{background:#0a1128;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:8px 10px;cursor:pointer;font-size:15px}
+.iconbtn.live{border-color:var(--bad);color:var(--bad)}
+.hist{font-size:11px;color:var(--mut)}
+a{color:var(--acc2)}
+</style>
+</head><body>
+<header><div class="wrap top">
+<div class="logo">N</div>
+<div><h1>NEXUS Agent Console</h1><small>chat • mic • paste • tools • gmail • whatsapp — localhost only</small></div>
+<div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<span class="pill ok">● local</span><span class="pill" id="clock">…</span>
+<label style="margin:0"><input type="checkbox" id="approve" style="width:auto"> auto-approve</label>
+<label style="margin:0"><input type="checkbox" id="speak" style="width:auto"> speak replies</label>
+<button class="btn ghost small" id="auto">auto-stats: on</button>
+<button class="btn small" onclick="loadStats()">Stats</button>
+</div></div></header>
+<div class="wrap">
+<main>
+<div>
+<div class="card"><h3>Quick actions</h3><div class="qa">
+<button class="btn ghost small" onclick="quick('git status here')">Git status</button>
+<button class="btn ghost small" onclick="quick('what connectors are configured?')">Connectors</button>
+<button class="btn ghost small" onclick="capture()">📷 Screen</button>
+<button class="btn ghost small" onclick="runDue()">Run due</button>
+<button class="btn ghost small" onclick="quick('list my open reminders')">Reminders</button>
+<button class="btn ghost small" onclick="quick('write a deep report on latest NVIDIA Nemotron news with sources')">Deep report</button>
+</div>
+<div class="hist" style="margin-top:8px"><button class="btn ghost small" onclick="exportChat()">Export</button>
+<button class="btn ghost small" onclick="clearChat()">Clear</button></div></div>
+<div class="card"><h3>Connect Gmail</h3>
+<input id="gmailAddr" placeholder="you@gmail.com" autocomplete="off">
+<input id="gmailPw" type="password" style="margin-top:7px" placeholder="16-letter app password" autocomplete="off">
+<button class="btn small" style="margin-top:8px" onclick="connectGmail()">Connect</button>
+<div class="sub" id="gmailStat">Google → 2-Step → App passwords. Stored process-only.</div>
+<div class="qa" style="margin-top:8px">
+<button class="btn ghost small" onclick="quick('check my unread gmail')">Inbox</button>
+<button class="btn ghost small" onclick="quick('draft a whatsapp message saying I will be 10 min late')">WA draft</button>
+</div></div>
+<div class="card"><h3>Connect WhatsApp</h3>
+<input id="waToken" type="password" placeholder="Cloud API token" autocomplete="off">
+<input id="waPhone" style="margin-top:7px" placeholder="Phone number ID" autocomplete="off">
+<button class="btn small" style="margin-top:8px" onclick="connectWA()">Connect</button>
+<div class="sub" id="waStat">Meta Developers → WhatsApp Cloud API. Or use whatsapp.draft.</div></div>
+<div class="card"><h3>Persona</h3>
+<select id="persona"><option>assistant</option><option>tutor</option><option>coach</option><option>interviewer</option><option>writer</option><option>debugger</option></select>
+<select id="tone" style="margin-top:7px"><option>calm</option><option>concise</option><option>formal</option><option>friendly</option><option>direct</option></select>
+<button class="btn small" style="margin-top:8px" onclick="setPersona()">Apply</button>
+<div class="sub" id="personaNow">…</div></div>
+<div class="card"><h3>Stats</h3>
+<div class="big"><span id="sTools">…</span> <span class="sub">tools</span></div>
+<div class="sub" id="sMem">…</div><div class="bar"><i id="connBar" style="width:0%"></i></div>
+<div class="sub" id="sConn">…</div></div>
+</div>
+<div>
+<div class="card"><h3>Agent chat <span class="hist">— Enter send • Ctrl+V paste image • 📎 attach</span></h3>
+<div id="chat"><div class="sys">Ask anything. Paste (Ctrl+V) a screenshot to analyze it. Mic button dictates.</div></div>
+<div class="row">
+<button class="iconbtn" id="mic" title="mic">🎤</button>
+<button class="iconbtn" title="attach file" onclick="document.getElementById('file').click()">📎</button>
+<input id="text" placeholder="message NEXUS…" autocomplete="off">
+<button class="btn" onclick="send()">Send</button>
+</div>
+<input type="file" id="file" hidden accept="image/*,.pdf,.txt,.md">
+<div class="sub" id="typing"></div></div>
+<div class="card"><h3>Tool runner</h3>
+<select id="toolName"></select>
+<textarea id="toolArgs">{}</textarea>
+<button class="btn small" onclick="runTool()">Run tool</button>
+<pre id="toolOut">output…</pre></div>
+</div>
+<div>
+<div class="card"><h3>Due now</h3><ul id="due"><li>…</li></ul></div>
+<div class="card"><h3>Reminders</h3><ul id="remList"><li>…</li></ul></div>
+<div class="card"><h3>Connectors</h3><ul id="connList"><li>…</li></ul></div>
+<div class="card"><h3>System</h3><ul id="sys"><li>…</li></ul></div>
+</div>
+</main>
+<footer><span id="stamp"></span> • MEDIUM+ auto-deny unless auto-approve • mic uses browser speech (Chrome/Edge) • images stay in data/screenshots • <a href="/api/briefing">/api/briefing</a></footer>
+</div>
+<script>
+let auto=true;let lastUser='';setInterval(()=>{if(auto)loadStats()},15000);
+document.getElementById('auto').onclick=e=>{auto=!auto;e.target.textContent='auto-stats: '+(auto?'on':'off')};
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString()},1000);
+document.getElementById('text').addEventListener('keydown',e=>{if(e.key==='Enter')send()});
+const approve=()=>document.getElementById('approve').checked;
+// history
+let hist=[];try{hist=JSON.parse(localStorage.getItem('nexus-chat')||'[]');}catch(e){hist=[];}
+hist.slice(-30).forEach(h=>bubble(h.c,h.t,true));
+function saveHist(c,t){hist.push({c,t});hist=hist.slice(-100);try{localStorage.setItem('nexus-chat',JSON.stringify(hist));}catch(e){}}
+function exportChat(){const b=hist.map(h=>(h.c==='me'?'YOU: ':'NEXUS: ')+h.t).join('\n\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([b],{type:'text/plain'}));a.download='nexus-chat.txt';a.click();}
+function clearChat(){document.getElementById('chat').innerHTML='';hist=[];localStorage.removeItem('nexus-chat');}
+function md(t){return (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/```([\s\S]*?)```/g,'<pre>$1</pre>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');}
+function bubble(cls,t,skip){const c=document.getElementById('chat');const d=document.createElement('div');d.className='msg '+cls;
+  if(cls==='ai'){d.innerHTML=md(t).replace(/\n/g,'<br>');
+    if(/needs your approval/i.test(t||'')){
+      const b=document.createElement('button');b.className='btn small';b.style.marginTop='8px';
+      b.textContent='Approve & send';b.onclick=()=>{document.getElementById('text').value=lastUser;b.remove();send(true);};
+      d.appendChild(document.createElement('br'));d.appendChild(b);}
+  }else{d.textContent=t;}
+  c.appendChild(d);c.scrollTop=c.scrollHeight;if(!skip)saveHist(cls,t);
+  if(cls==='ai'&&document.getElementById('speak').checked)speak(t);}
+function bubbleImg(dataUrl,caption){const c=document.getElementById('chat');const d=document.createElement('div');d.className='msg me';d.textContent=caption||'pasted image';const i=document.createElement('img');i.src=dataUrl;d.appendChild(i);c.appendChild(d);c.scrollTop=c.scrollHeight;}
+function speak(t){try{const u=new SpeechSynthesisUtterance(t.slice(0,500));speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+async function api(path,body){const c=new AbortController();window._abort=c;const r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:c.signal});return r.json();}
+async function send(onceApprove){const el=document.getElementById('text');const t=el.value.trim();if(!t)return;el.value='';lastUser=t;bubble('me',t);typing('NEXUS is thinking… (Stop: Esc)');
+  try{const j=await api('/api/chat',{text:t,approve:onceApprove||approve()});bubble('ai',j.reply||j.error||'?');}catch(e){bubble('ai','stopped/failed: '+e);}
+  typing('');loadStats();}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&window._abort)window._abort.abort();});
+function typing(s){document.getElementById('typing').textContent=s;}
+async function quick(t){lastUser=t;bubble('me',t);typing('NEXUS is thinking…');try{const j=await api('/api/chat',{text:t,approve:approve()});bubble('ai',j.reply||j.error||'?');}catch(e){bubble('ai','failed: '+e);}typing('');loadStats();}
+// mic (browser SpeechRecognition, Chrome/Edge)
+let rec=null;
+document.getElementById('mic').onclick=()=>{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){typing('mic not supported in this browser — use Chrome/Edge.');return;}
+  if(rec){rec.stop();rec=null;document.getElementById('mic').classList.remove('live');return;}
+  rec=new SR();rec.lang='en-US';rec.interimResults=false;
+  document.getElementById('mic').classList.add('live');typing('listening… (click mic to stop)');
+  rec.onresult=e=>{const t=e.results[0][0].transcript;document.getElementById('text').value=t;typing('');send();};
+  rec.onerror=()=>{typing('mic error');document.getElementById('mic').classList.remove('live');rec=null;};
+  rec.onend=()=>{document.getElementById('mic').classList.remove('live');rec=null;typing('');};
+  rec.start();};
+// paste image -> upload -> vision
+document.getElementById('text').addEventListener('paste',async e=>{
+  const items=(e.clipboardData||{}).items||[];
+  for(const it of items){if(it.type&&it.type.startsWith('image/')){
+    e.preventDefault();const f=it.getAsFile();await uploadBlob(f,'pasted screenshot');break;}}
+});
+document.getElementById('file').addEventListener('change',async e=>{
+  const f=e.target.files[0];if(f)await uploadBlob(f,f.name);e.target.value='';});
+async function uploadBlob(file,label){const rd=new FileReader();
+  rd.onload=async()=>{const dataUrl=rd.result;const b64=dataUrl.split(',')[1];
+    bubbleImg(dataUrl,'⏫ '+label);typing('uploading + analyzing…');
+    try{const up=await api('/api/upload',{filename:file.name||'paste.png',data_b64:b64});
+      if(!up.ok&&!up.path){bubble('ai',up.error||'upload failed');typing('');return;}
+      const j=await api('/api/vision',{path:up.path,question:'Describe this image in detail and answer what it shows.',approve:approve()});
+      bubble('ai',j.reply||j.error||'?');}catch(e){bubble('ai','failed: '+e);}
+    typing('');loadStats();};
+  rd.readAsDataURL(file);}
+async function capture(){lastUser='What do you see on my screen?';bubble('me','📷 capture screen');try{const j=await api('/api/screen/capture',{approve:approve()});bubble('ai',j.ok?('Screenshot: '+(j.output.path||'?')+' — analyzing…'):'capture failed: '+j.error);
+  if(j.ok&&j.output&&j.output.path){const v=await api('/api/vision',{path:j.output.path,question:'What do you see on my screen?',approve:approve()});bubble('ai',v.reply||v.error);}}catch(e){bubble('ai','failed: '+e);}loadStats();}
+async function runDue(){bubble('me','run due routines');try{const j=await api('/api/routines/run',{});bubble('ai','ran '+j.count);}catch(e){bubble('ai','failed: '+e);}loadStats();}
+async function setPersona(){const p=document.getElementById('persona').value,t=document.getElementById('tone').value;try{const j=await api('/api/persona',{persona:p,tone:t});document.getElementById('personaNow').textContent=j.persona+' / '+j.tone;bubble('sys','persona → '+j.persona+' / '+j.tone);}catch(e){bubble('ai','failed: '+e);}loadStats();}
+async function connectGmail(){const a=document.getElementById('gmailAddr').value.trim(),p=document.getElementById('gmailPw').value;document.getElementById('gmailStat').textContent='testing login…';try{const j=await api('/api/connectors/gmail',{address:a,app_password:p,remember:true});document.getElementById('gmailStat').textContent=(j.login_ok?'✓ ':j.configured?'⚠ saved, ':'✗ ')+(j.hint||'');bubble('sys','gmail: '+(j.login_ok?'login OK':(j.hint||'check')));}catch(e){bubble('ai','failed: '+e);}loadStats();}
+async function connectWA(){const t=document.getElementById('waToken').value,p=document.getElementById('waPhone').value.trim();try{const j=await api('/api/connectors/whatsapp',{token:t,phone_number_id:p,remember:true});document.getElementById('waStat').textContent=j.configured?'✓ saved to .env':'enter token + phone ID, or use whatsapp.draft';bubble('sys','whatsapp '+(j.configured?'connected':'draft mode'));}catch(e){bubble('ai','failed: '+e);}loadStats();}
+async function runTool(){const n=document.getElementById('toolName').value;let a={};try{a=JSON.parse(document.getElementById('toolArgs').value||'{}');}catch(e){document.getElementById('toolOut').textContent='bad JSON args';return;}document.getElementById('toolOut').textContent='running…';try{const j=await api('/api/tool/run',{name:n,arguments:a,approve:approve()});document.getElementById('toolOut').textContent=JSON.stringify(j,null,2);}catch(e){document.getElementById('toolOut').textContent='failed: '+e;}loadStats();}
+async function loadStats(){try{const b=await (await fetch('/api/briefing')).json();document.getElementById('sTools').textContent=b.tools&&b.tools.count;document.getElementById('sMem').textContent='memory '+(b.memory&&b.memory.total);const c=b.connectors||{configured:0,total:0};document.getElementById('sConn').textContent=c.configured+'/'+c.total+' connectors';document.getElementById('connBar').style.width=(c.total?100*c.configured/c.total:0)+'%';document.getElementById('personaNow').textContent=(b.persona||'?')+' / '+(b.tone||'?');
+document.getElementById('due').innerHTML=(b.routines.due.length?b.routines.due.map(d=>`<li>⏰ ${d.name}<span class="tag">#${d.id}</span></li>`).join(''):'<li>Nothing due 🎉</li>');
+document.getElementById('remList').innerHTML=(b.reminders.items||[]).map(x=>`<li>📝 ${x.text}<span class="tag">${x.due||''} #${x.id}</span></li>`).join('')||'<li>—</li>';
+document.getElementById('connList').innerHTML=(c.items||[]).map(x=>`<li>${x.configured?'🟢':'⚪'} ${x.label}<span class="tag">${x.configured?'ready':'missing'}</span></li>`).join('');
+const n=b.nexus||{};const sv=b.server||{};document.getElementById('sys').innerHTML=[['model',(n.ai_model||'').split('/').pop()],['vision',(n.vision_model||'').split('/').pop()],['phase','8'],['privacy',b.privacy_mode],['server','pid '+(sv.pid||'?')]].map(([k,v])=>`<li>${k}<span class="tag">${v}</span></li>`).join('');
+document.getElementById('stamp').textContent='updated '+new Date().toLocaleTimeString();
+if(!document.getElementById('toolName').options.length){const t=await (await fetch('/api/tools')).json();document.getElementById('toolName').innerHTML=(t.tools||[]).map(x=>`<option value="${x.name}">${x.name} [${x.risk}]</option>`).join('');}
+}catch(e){}}
+loadStats();
+</script>
+</body></html>

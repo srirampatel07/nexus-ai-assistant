@@ -127,16 +127,22 @@ No unlimited or free usage is promised. The NVIDIA endpoint may rate-limit (429)
 
 Tests mock all external services and need no API credentials (621 passed, 1 skipped at audit time). A small live `run.py --health` check is safe when a key is configured; it consumes no chat quota and uploads no images. Avoid repeated live vision/chat calls.
 
-## Project structure (Phase 7)
+## Project structure (Phase 8 Jarvis parity)
 
 ```
 NEXUS/
   app/__init__.py  app/main.py
   app/core/   config.py logger.py events.py exceptions.py
-  app/brain/  assistant.py planner.py router.py provider.py prompts.py tasks.py
+  app/brain/  assistant.py planner.py router.py provider.py prompts.py tasks.py budget.py
   app/tools/  base.py registry.py schemas.py permissions.py executor.py
               terminal.py filesystem.py applications.py system.py
               web.py browser.py brave.py
+              screen.py git.py docker.py reminders.py routines.py connectors.py imagegen.py
+  app/screen/  capture.py overlay.py
+  app/personas/  catalog.py
+  app/routines/  store.py
+  app/connectors/  base.py
+  app/server/  briefing.py
   app/security/  policy.py confirmation.py audit.py
   app/memory/  database.py models.py repository.py manager.py
                redaction.py categories.py
@@ -150,8 +156,8 @@ NEXUS/
               + executor/tool_calls/assistant_tools/tool_wire/names/loop
               + nvidia provider/vision + nvidia-only + phase7 orchestration
               + memory/integration + voice + vision + web/browser/brave
-              + gemini compat + provider transport
-  docs/  REPOSITORY_AUDIT.md TOOLS.md MEMORY.md VOICE.md VISION.md WEB.md LOCAL.md
+              + gemini compat + provider transport + jarvis_parity
+  docs/  REPOSITORY_AUDIT.md TOOLS.md MEMORY.md VOICE.md VISION.md WEB.md LOCAL.md JARVIS.md
   data/ logs/ scripts/ frontend/dashboard/  (runtime data + phase placeholders)
   run.py  requirements.txt  .env.example  README.md
   Start-NEXUS.bat
@@ -165,7 +171,8 @@ NEXUS/
 - Phase 5.0: vision (explicit image-file input, NVIDIA-hosted description)
 - Phase 6.0: web search, page retrieval, reader browser sessions
 - Phase 7: bounded multi-step tool orchestration (this tree — dedup, truncation, timeout, progress notes, synthesis turn)
-- Later: screenshots/camera + safe UI actions, IoT (MQTT/ESP32), HTTP API, dashboard, autonomous multi-step tasks
+- Phase 8: Jarvis parity foundation (this tree — screen.capture/point, personas/tones, git/docker, reminders/routines, connectors.status+github, image.generate, smart filter + budget guards, --briefing Command Center). See `docs/JARVIS.md`.
+- Later: full OAuth connectors, background daemon + nudges, HTTP API + rich dashboard, wake-word + 27-lang voice, mobile remote, IoT (MQTT/ESP32)
 
 Legacy local operation (llama.cpp servers, GGUF files, `switch-model.ps1`,
 local vision) was removed; `docs/LOCAL.md` records the removal and the

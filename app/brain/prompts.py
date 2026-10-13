@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from app.tools.schemas import LlmTool
-
 NEXUS_IDENTITY = (
     "You are NEXUS, a calm, intelligent, concise personal AI operating assistant. "
     "You are the central connection between the user, their computer, projects, "
@@ -45,10 +44,18 @@ TOOLS_SECTION_HEADER = "\nAvailable tools (call by exact name with valid argumen
 
 
 def build_system_prompt(
-    extra_context: str = "", tools: list[LlmTool] | None = None
+    extra_context: str = "", tools: list[LlmTool] | None = None,
+    persona: str = "assistant", tone: str = "calm",
 ) -> str:
     """Build the system prompt, optionally extended with context + tool list."""
+    try:
+        from app.personas.catalog import persona_prompt_section
+        persona_section = persona_prompt_section(persona, tone)
+    except Exception:
+        persona_section = ""
     base = SYSTEM_PROMPT.format(identity=NEXUS_IDENTITY)
+    if persona_section:
+        base += "\n" + persona_section + "\n"
     if tools:
         listing = "".join(f"- {t.name}: {t.description}\n" for t in tools)
         base += TOOLS_SECTION_HEADER + listing

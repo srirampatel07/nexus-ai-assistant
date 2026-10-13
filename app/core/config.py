@@ -232,6 +232,27 @@ class Settings(BaseSettings):
     web_fetch_max_redirects: int = Field(default=5)
     web_text_max_chars: int = Field(default=20000)
 
+    # --- Jarvis parity (Phase 8): personas, privacy, budgets, routines ---
+    # Persona/tone shape the system prompt (see app/personas/catalog.py).
+    nexus_persona: str = Field(default="assistant")
+    nexus_tone: str = Field(default="calm")
+    # Privacy: strict (no screen capture, no web fetch, no image upload
+    # beyond explicit vision) / guarded (default) / relaxed.
+    nexus_privacy_mode: str = Field(default="guarded")
+    # Cost guards: heuristic chars/4 token estimates per reply + session.
+    nexus_session_token_cap: int = Field(default=100000)
+    nexus_reply_token_cap: int = Field(default=20000)
+    # Smart tool selection: keyword pre-filter before each model turn.
+    smart_tools_enabled: bool = Field(default=True)
+    smart_tools_max: int = Field(default=12)
+    # Local stores for routines + reminders (no secrets inside).
+    routines_db_path: str = Field(default="data/routines.db")
+    reminders_db_path: str = Field(default="data/reminders.db")
+    # Screen capture on/off (STRICT privacy overrides to off).
+    screen_capture_enabled: bool = Field(default=True)
+    # Image generation on/off (keyless Pollinations).
+    image_gen_enabled: bool = Field(default=True)
+
     def model_dump_safe(self) -> dict:
         """Return settings as a JSON-serializable dict with secrets redacted."""
         data = self.model_dump(mode="json")
